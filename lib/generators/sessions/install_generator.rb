@@ -78,6 +78,48 @@ module Sessions
         MSG
       end
 
+      # Default (non-polymorphic) mode assumes a `User` class — the same
+      # assumption `rails generate authentication` makes: `belongs_to :user`
+      # and a foreign key to `users`. A Devise app whose auth model is
+      # Member/Account would pass detection and then break at db:migrate
+      # (FK to a missing `users` table) or at runtime (`belongs_to :user`
+      # constantizing a class that doesn't exist) — catch it HERE, with the
+      # fix in the error message. `--polymorphic` works with any model(s).
+      def check_devise_auth_model_fit!
+        return if polymorphic?
+        return unless devise_detected?
+        # An adopted omakase table already proves whatever owner shape the
+        # host made work — nothing for us to second-guess.
+        return if adopt_existing_table?
+
+        classes = devise_auth_class_names
+        return if classes.empty?         # mappings unreadable — stay permissive
+        return if classes == ["User"]    # the default assumption holds
+
+        if classes.include?("User")
+          # User plus other scopes: default mode tracks User and SILENTLY
+          # skips the rest (the runtime adapter's row_accepts? guard) —
+          # surface that tradeoff at install time, but proceed.
+          say "⚠️  Multiple Devise models detected (#{classes.join(", ")}).", :yellow
+          say "   The default install tracks only User — sessions for the other models", :yellow
+          say "   stay untracked. Re-run with --polymorphic to track them all.", :yellow
+          return
+        end
+
+        raise Thor::Error, <<~MSG
+          ❌ Your Devise model is #{classes.join(", ")} — not User. The default install
+          assumes a `User` class (`belongs_to :user`, foreign key to `users`, the
+          same assumption `rails generate authentication` makes) and would break
+          at migrate/runtime.
+
+          Re-run with the polymorphic owner, which works with any model(s):
+
+            rails generate sessions:install --polymorphic
+
+          …then declare `has_sessions` on #{classes.join(" and ")}.
+        MSG
+      end
+
       def create_migration_files
         if adopt_existing_table?
           migration_template "add_sessions_columns.rb.erb",
@@ -189,6 +231,19 @@ module Sessions
 
       def devise_detected?
         defined?(::Devise) ? true : false
+      end
+
+      # The class names behind the host's `devise_for` scopes, as strings
+      # (never constantized — the generator must not boot-order-couple to
+      # app models). On Rails 8, `Devise.mappings` itself force-loads the
+      # lazy routes (Devise 5.x, lib/devise.rb), so an empty hash genuinely
+      # means "no devise_for drawn yet" — nothing to validate against.
+      def devise_auth_class_names
+        return [] unless devise_detected?
+
+        ::Devise.mappings.values.map { |mapping| mapping.class_name.to_s }.uniq.sort
+      rescue StandardError
+        []
       end
 
       def adopt_existing_table?

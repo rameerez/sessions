@@ -33,12 +33,19 @@ module Sessions
 
     before_action :sessions_authenticate!
 
-    helper Sessions::EngineHelper
-    helper_method :sessions_current_user, :sessions_current_session
+    # The view-layer DSL (`helper`, `helper_method`, `layout`) doesn't exist
+    # on ActionController::API — and an API-only host that bundles the gem
+    # purely for the model/trail APIs still EAGER LOADS this class in
+    # production, mounted or not. Guarding keeps such hosts bootable; the
+    # HTML devices page itself still requires a Base-derived
+    # config.parent_controller (the default), which is the only setup it's
+    # rendered under.
+    helper Sessions::EngineHelper if respond_to?(:helper)
+    helper_method :sessions_current_user, :sessions_current_session if respond_to?(:helper_method)
 
     # nil falls through to the parent controller's regular layout
     # resolution, so by default the page looks like the rest of the host.
-    layout :sessions_layout
+    layout :sessions_layout if respond_to?(:layout)
 
     private
 

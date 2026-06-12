@@ -19,6 +19,23 @@ class ClassifierTest < ActiveSupport::TestCase
 
   FakeWarden = Struct.new(:winning_strategy)
 
+  test "config.strategy_methods overrides a built-in mapping on the SAME key" do
+    # A bare merge would let the built-in "Rememberable" => :password value
+    # clobber this host override — the documented contract is host-wins.
+    Sessions.config.strategy_methods = { "Rememberable" => :token }
+
+    assert_equal :token, Sessions::Classifier.method_for_strategy("Devise::Strategies::Rememberable")
+  end
+
+  test "config.strategy_methods entries are consulted before the built-ins" do
+    # "Authenticatable" is a SUBSTRING of the built-in DatabaseAuthenticatable
+    # key — host entries must win the iteration order, or a broad host
+    # substring could never out-rank a narrower built-in.
+    Sessions.config.strategy_methods = { "Authenticatable" => :sso }
+
+    assert_equal :sso, Sessions::Classifier.method_for_strategy("Devise::Strategies::DatabaseAuthenticatable")
+  end
+
   test "an explicit Sessions.tag wins over everything" do
     request = fake_request(env: { "omniauth.auth" => { "provider" => "github" } })
     Sessions.tag(request, method: :passkey, detail: { user_verified: true })

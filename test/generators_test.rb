@@ -77,6 +77,49 @@ class InstallGeneratorTest < Rails::Generators::TestCase
     end
   end
 
+  test "aborts when the Devise model isn't User (default mode would break at migrate/runtime)" do
+    stub_devise_mode!
+    Sessions::Generators::InstallGenerator.any_instance.stubs(:devise_auth_class_names).returns(["Member"])
+
+    stderr = capture(:stderr) { run_generator }
+
+    assert_match(/Member — not User/, stderr)
+    assert_match(/--polymorphic/, stderr)
+    assert_no_migration "db/migrate/create_sessions.rb"
+    assert_no_file "config/initializers/sessions.rb" # the run truly aborted
+  end
+
+  test "--polymorphic accepts any Devise model" do
+    stub_devise_mode!
+    Sessions::Generators::InstallGenerator.any_instance.stubs(:devise_auth_class_names).returns(["Member"])
+
+    run_generator %w[--polymorphic]
+
+    assert_migration "db/migrate/create_sessions.rb", /polymorphic: true/
+    assert_file "config/initializers/sessions.rb"
+  end
+
+  test "warns (but proceeds) when extra Devise scopes ride alongside User" do
+    stub_devise_mode!
+    Sessions::Generators::InstallGenerator.any_instance
+                                          .stubs(:devise_auth_class_names).returns(%w[AdminUser User])
+
+    output = run_generator
+
+    assert_match(/Multiple Devise models detected/, output)
+    assert_match(/--polymorphic/, output)
+    assert_migration "db/migrate/create_sessions.rb" # warned, not blocked
+  end
+
+  test "unreadable Devise mappings stay permissive (the previous behavior)" do
+    stub_devise_mode! # does NOT stub devise_auth_class_names: ::Devise is
+    # absent in this suite, so the real method rescues to [] — proceed.
+
+    run_generator
+
+    assert_migration "db/migrate/create_sessions.rb"
+  end
+
   test "aborts with guidance when no auth system is detected" do
     Sessions::Generators::InstallGenerator.any_instance.stubs(:omakase_detected?).returns(false)
     Sessions::Generators::InstallGenerator.any_instance.stubs(:devise_detected?).returns(false)

@@ -91,6 +91,11 @@ end
 
 That's it. Every sign-in from now on lands on the devices page and in the trail — on Rails 8 auth there is literally nothing else to wire (the gem decorates the generated `Session` model automatically; your app code stays untouched).
 
+> [!NOTE]
+> **Auth model isn't `User`?** (Devise on `Member`/`Account`, or several `devise_for` scopes): install with `rails generate sessions:install --polymorphic` — the session owner becomes polymorphic and every scope/model gets tracked; put `has_sessions` on each of them. The default install assumes a `User` class (the same assumption `rails generate authentication` makes), and the installer stops with exactly this advice when your Devise mappings don't fit it.
+>
+> **API-only app?** The gem boots and tracks fine (use the model APIs and `Sessions.track_login`), but the devices page is HTML — mounting the engine needs an `ActionController::Base`-derived `config.parent_controller`, which API-only apps don't have.
+
 ## What `sessions` does (and doesn't) do
 
 **Does:**

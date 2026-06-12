@@ -153,7 +153,13 @@ module Sessions
     end
 
     def method_for_strategy(strategy_name)
-      Sessions.config.strategy_methods.merge(STRATEGY_METHODS).each do |substring, method|
+      # Host entries are consulted FIRST (Hash#merge keeps the receiver's
+      # keys in front, so config substrings win the iteration order) and the
+      # block makes them WIN on a shared key too — a bare `merge` would let
+      # the built-in value silently clobber a host override of, say,
+      # "Rememberable".
+      mappings = Sessions.config.strategy_methods.merge(STRATEGY_METHODS) { |_key, custom, _builtin| custom }
+      mappings.each do |substring, method|
         return method if strategy_name.include?(substring)
       end
       nil

@@ -57,3 +57,14 @@ en:
       composite: "%{client} on %{platform}"
       unknown: "Unknown device"
       bot: "Bot (%{name})"
+  # The flash a remotely-revoked device sees on its next request, rendered by
+  # Devise's failure app (the Warden adapter kicks with
+  # `throw :warden, message: :session_revoked`). Devise's lookup is
+  # `I18n.t(:"#{scope}.#{message}", scope: "devise.failure", default: [message])`
+  # — see Devise::FailureApp#i18n_message (devise/lib/devise/failure_app.rb).
+  # Without this key the flash literally reads
+  # "Translation missing: en.devise.failure.user.session_revoked".
+  # Hosts override it like any I18n key (app locale files load after engines).
+  devise:
+    failure:
+      session_revoked: "That session was signed out remotely. Please sign in again."

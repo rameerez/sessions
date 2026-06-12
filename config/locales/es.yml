@@ -57,3 +57,10 @@ es:
       composite: "%{client} en %{platform}"
       unknown: "Dispositivo desconocido"
       bot: "Bot (%{name})"
+  # El aviso que ve un dispositivo cuya sesión fue revocada en remoto, en su
+  # siguiente petición (lo muestra la failure app de Devise; el adaptador de
+  # Warden expulsa con `throw :warden, message: :session_revoked`). Sin esta
+  # clave, el flash mostraría literalmente "Translation missing: …".
+  devise:
+    failure:
+      session_revoked: "Esa sesión se cerró de forma remota. Vuelve a iniciar sesión."

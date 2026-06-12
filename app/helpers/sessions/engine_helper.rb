@@ -102,14 +102,21 @@ module Sessions
 
     # "Signed in May 2, 2026" — localized when the host bundles date
     # formats (rails-i18n or its own locale files), with a safe fallback so
-    # a bare host never 500s over a missing `date.formats.long`.
+    # a bare host never 500s over a missing `date.formats.long`. nil-safe:
+    # without the guard, I18n.l(nil) raises I18n::ArgumentError and the
+    # rescue would then call nil.strftime — a trap for custom views passing
+    # a nullable column.
     def sessions_format_date(date)
+      return nil unless date
+
       I18n.l(date, format: :long)
     rescue I18n::MissingTranslationData, I18n::ArgumentError
       date.strftime("%Y-%m-%d")
     end
 
     def sessions_format_time(time)
+      return nil unless time
+
       I18n.l(time, format: :short)
     rescue I18n::MissingTranslationData, I18n::ArgumentError
       time.strftime("%Y-%m-%d %H:%M")

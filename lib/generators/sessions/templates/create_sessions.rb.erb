@@ -79,16 +79,26 @@ class Create<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_ve
 
   private
 
-  # Honor the host's configured primary key type (uuid vs bigint). Reads the
-  # same setting `rails g model` uses, so an app generated with
+  # Honor the host's configured primary key type (uuid, string/ULID, bigint…).
+  # Reads the same setting `rails g model` uses, so an app generated with
   # `config.generators { |g| g.orm :active_record, primary_key_type: :uuid }`
   # gets uuid sessions tables and uuid foreign keys, automatically.
   def primary_and_foreign_key_types
     config = Rails.configuration.generators
     setting = config.options[config.orm][:primary_key_type]
-    primary_key_type = setting || :primary_key
-    foreign_key_type = setting || :bigint
-    [ primary_key_type, foreign_key_type ]
+    [ setting || :primary_key, reference_column_type(setting) ]
+  end
+
+  # Reference columns hold VALUES of the PK type, so the serial pseudo-types
+  # map to their plain integer equivalents — a `t.bigserial` reference would
+  # mint its own auto-increment sequence, which is exactly wrong for a
+  # foreign key. Everything else (uuid, string ULIDs, …) passes through.
+  def reference_column_type(setting)
+    case setting
+    when nil, :bigserial then :bigint
+    when :serial then :integer
+    else setting
+    end
   end
 
   # match? (not equality): PostGIS apps report adapter_name "PostGIS" and

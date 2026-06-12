@@ -22,6 +22,13 @@ class EngineUiTest < ActionDispatch::IntegrationTest
     @user.sessions.order(:created_at).last
   end
 
+  test "the format helpers tolerate nil (custom views pass nullable columns)" do
+    helper = Class.new { include Sessions::EngineHelper }.new
+
+    assert_nil helper.sessions_format_date(nil)
+    assert_nil helper.sessions_format_time(nil)
+  end
+
   test "the sudo gate fails CLOSED: a falsy gate blocks with 403" do
     Sessions.config.require_reauthentication = ->(_controller) { false }
     sign_in!

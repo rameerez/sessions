@@ -85,17 +85,26 @@ class CreateSessionsEvents < ActiveRecord::Migration<%= migration_version %>
   def primary_and_foreign_key_types
     config = Rails.configuration.generators
     setting = config.options[config.orm][:primary_key_type]
-    primary_key_type = setting || :primary_key
-    foreign_key_type = setting || :bigint
-    [ primary_key_type, foreign_key_type ]
+    [ setting || :primary_key, reference_column_type(setting) ]
   end
 
   # session_id must match the sessions table's PRIMARY KEY type (uuid hosts
-  # store uuid linkage; bigint hosts store bigint).
+  # store uuid linkage, string/ULID hosts string, bigint hosts bigint).
   def session_id_column_type
     config = Rails.configuration.generators
-    setting = config.options[config.orm][:primary_key_type]
-    setting == :uuid ? :uuid : :bigint
+    reference_column_type(config.options[config.orm][:primary_key_type])
+  end
+
+  # Reference columns hold VALUES of the PK type, so the serial pseudo-types
+  # map to their plain integer equivalents — a `t.bigserial` reference would
+  # mint its own auto-increment sequence, which is exactly wrong for a
+  # foreign key. Everything else (uuid, string ULIDs, …) passes through.
+  def reference_column_type(setting)
+    case setting
+    when nil, :bigserial then :bigint
+    when :serial then :integer
+    else setting
+    end
   end
 
   # match? (not equality): PostGIS apps report adapter_name "PostGIS" and
