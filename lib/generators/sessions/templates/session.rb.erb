@@ -1,0 +1,14 @@
+# frozen_string_literal: true
+
+# Your session-of-record model — deliberately a 3-line shell: ALL the gem's
+# behavior (device names, revocation, scopes, the trail) lives in the
+# Sessions::Model concern, so this file never goes stale across gem updates.
+# It's also exactly the model `rails generate authentication` would create,
+# which keeps a future move to Rails' built-in auth a no-op for this table.
+class <%= model_name %> < ApplicationRecord
+<% if model_name.underscore.pluralize != table_name -%>
+  self.table_name = "<%= table_name %>"
+
+<% end -%>
+  include Sessions::Model
+end

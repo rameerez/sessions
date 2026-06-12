@@ -1,0 +1,50 @@
+/* sessions — minimal, semantic defaults for the devices page.
+   Every element carries a `sessions-*` class; restyle freely (Tailwind
+   hosts usually just eject the views with `rails g sessions:views`). */
+
+.sessions-page { max-width: 40rem; margin: 0 auto; }
+.sessions-title { font-size: 1.5rem; margin-bottom: 1rem; }
+.sessions-subtitle { font-size: 1.125rem; margin: 0; }
+
+.sessions-device-list, .sessions-event-list { list-style: none; margin: 0; padding: 0; }
+
+.sessions-device {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.75rem 0.5rem; border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+}
+.sessions-device-current { background: rgba(128, 128, 128, 0.07); border-radius: 0.5rem; }
+.sessions-device-icon { font-size: 1.5rem; line-height: 1; }
+.sessions-device-info { flex: 1; min-width: 0; }
+.sessions-device-name { margin: 0; font-weight: 600; }
+.sessions-device-meta { margin: 0.15rem 0 0; font-size: 0.85rem; opacity: 0.75; }
+
+.sessions-badge {
+  display: inline-block; flex-shrink: 0; padding: 0.25rem 0.65rem;
+  font-size: 0.7rem; font-weight: 600; border-radius: 999px; white-space: nowrap;
+  background: rgba(46, 160, 67, 0.15); color: #2ea043;
+}
+
+.sessions-method-pill {
+  display: inline-block; margin-left: 0.35rem; padding: 0.1rem 0.5rem;
+  font-size: 0.68rem; font-weight: 500; border-radius: 999px; vertical-align: middle;
+  background: rgba(128, 128, 128, 0.12); color: rgba(60, 60, 60, 0.85);
+}
+
+.sessions-button {
+  padding: 0.35rem 0.85rem; font-size: 0.85rem; border-radius: 0.4rem;
+  border: 1px solid rgba(128, 128, 128, 0.4); background: transparent; cursor: pointer;
+}
+.sessions-button-revoke:hover { border-color: #d1242f; color: #d1242f; }
+.sessions-revoke-others { margin-top: 1rem; text-align: center; }
+
+.sessions-history { margin-top: 2.5rem; }
+.sessions-history-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.5rem; }
+.sessions-history-link { font-size: 0.85rem; }
+
+.sessions-event { padding: 0.45rem 0.5rem; font-size: 0.875rem; border-bottom: 1px solid rgba(128, 128, 128, 0.15); }
+.sessions-event-icon { display: inline-block; width: 1.25rem; }
+.sessions-event-failed_login .sessions-event-icon { color: #d1242f; }
+.sessions-event-login .sessions-event-icon { color: #2ea043; }
+.sessions-event-reason, .sessions-event-device, .sessions-event-location, .sessions-event-time { opacity: 0.75; }
+
+.sessions-empty { opacity: 0.7; padding: 1rem 0.5rem; }

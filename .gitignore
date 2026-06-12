@@ -1,0 +1,27 @@
+/.bundle/
+/.yardoc/
+/_yardoc/
+/coverage/
+/doc/
+/pkg/
+/spec/reports/
+/tmp/
+/dist/
+
+# For gems, ignore all lockfiles (root and appraisal) to allow flexible dependency resolution
+Gemfile.lock
+gemfiles/*.lock
+
+test/dummy/db/*.sqlite3*
+test/dummy/log/*.log
+test/dummy/tmp/
+test/dummy/storage/
+test/dummy/.bundle/
+
+.DS_Store
+.ruby-lsp/
+
+TODO
+.cursor/
+
+docs/

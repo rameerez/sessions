@@ -1,0 +1,15 @@
+<%# The "Your devices" page — the GitHub/Google contract: device label, %>
+<%# approximate location, last active, per-row revoke, sign out everywhere. %>
+<div class="sessions-page">
+  <h1 class="sessions-title"><%= t("sessions.devices.title") %></h1>
+
+  <%= render "sessions/devices", sessions: @sessions, current_session: sessions_current_session %>
+
+  <section class="sessions-history">
+    <header class="sessions-history-header">
+      <h2 class="sessions-subtitle"><%= t("sessions.history.title") %></h2>
+      <%= link_to t("sessions.history.see_all"), history_devices_path, class: "sessions-history-link" %>
+    </header>
+    <%= render "sessions/history", events: @events %>
+  </section>
+</div>

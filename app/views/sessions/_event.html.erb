@@ -1,0 +1,13 @@
+<%# One trail row. Local: event. %>
+<li class="sessions-event sessions-event-<%= event.event %>">
+  <span class="sessions-event-icon">
+    <%= { "login" => "✓", "failed_login" => "✗", "logout" => "→", "revoked" => "⊘", "expired" => "⏱" }.fetch(event.event, "·") %>
+  </span>
+  <span class="sessions-event-label">
+    <%= t("sessions.history.events.#{event.event}", default: event.event.humanize) %><% if event.failure? && event.failure_reason.present? %> <span class="sessions-event-reason">(<%= t("sessions.history.reasons.#{event.failure_reason}", default: event.failure_reason.humanize.downcase) %>)</span><% end %><% if event.event == "revoked" && event.revoked_reason.present? %> <span class="sessions-event-reason">(<%= t("sessions.history.reasons.#{event.revoked_reason}", default: event.revoked_reason.humanize.downcase) %>)</span><% end %>
+  </span>
+  <% device = [event.browser_name, event.app_name].compact.first %>
+  <% if device %> · <span class="sessions-event-device"><%= device %><%= " #{t("sessions.history.on")} #{event.os_name}" if event.os_name %></span><% end %>
+  <% if event.location %> · <span class="sessions-event-location"><%= event.location %></span><% end %>
+  <% if event.occurred_at %> · <time class="sessions-event-time" datetime="<%= event.occurred_at.iso8601 %>"><%= sessions_format_time(event.occurred_at) %></time><% end %>
+</li>

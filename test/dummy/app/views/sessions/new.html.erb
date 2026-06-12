@@ -1,0 +1,6 @@
+<%# Vendored shape from the authentication generator's sessions/new view %>
+<%= form_with url: session_path do |form| %>
+  <%= form.email_field :email_address, required: true, autocomplete: "username", placeholder: "Enter your email address" %>
+  <%= form.password_field :password, required: true, autocomplete: "current-password", placeholder: "Enter your password", maxlength: 72 %>
+  <%= form.submit "Sign in" %>
+<% end %>

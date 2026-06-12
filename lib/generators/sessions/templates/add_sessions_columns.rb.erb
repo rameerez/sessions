@@ -1,0 +1,81 @@
+# frozen_string_literal: true
+
+# Enriches the `<%= table_name %>` table that `rails generate authentication`
+# created (precedent: Devise's add_devise_to_users extends your users table).
+# Your existing columns and rows are untouched: ip_address/user_agent keep
+# holding their login-time values; everything below is filled by the sessions
+# gem from the next sign-in on.
+class AddSessionsColumnsTo<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    change_table :<%= table_name %>, bulk: true do |t|
+      # Devise/Warden mode only: SHA-256 of a random token whose raw value
+      # lives ONLY in the user's own session (OWASP: never persist raw
+      # session identifiers). Stays NULL on Rails-8-auth rows — there the
+      # signed cookie is the credential and nothing secret needs storing.
+      t.string :token_digest
+
+      # The Warden scope ("user") — multi-scope Devise apps.
+      t.string :scope
+
+      # How this session started: password / oauth / google_one_tap /
+      # passkey / magic_link / otp / sso / token / unknown — plus the
+      # provider ("google", "apple", "github") and per-method extras
+      # (One Tap's select_by, passkey UV/BS flags, OAuth scopes…).
+      t.string :auth_method
+      t.string :auth_provider
+      t.send(json_column_type, :auth_detail)
+
+      # Parsed device intelligence — projections of the raw user_agent
+      # ("Chrome 137 on macOS", "MyApp 2.4.1 on Pixel 8 (Android 16)").
+      t.string :browser_name
+      t.string :browser_version
+      t.string :os_name
+      t.string :os_version
+      t.string :device_type   # desktop / smartphone / tablet / native_ios / native_android / bot / unknown
+      t.string :device_model  # "iPhone15,2", "Pixel 8" — when knowable
+      t.string :app_name      # Hotwire Native apps
+      t.string :app_version
+      t.string :app_build
+      t.send(json_column_type, :client_hints) # raw Sec-CH-UA* + X-Client-* headers, for re-parsing
+
+      # Approximate location via the trackdown gem (soft dependency) —
+      # stays NULL without it and the UI omits location cleanly.
+      t.string :country_code, limit: 2
+      t.string :country_name
+      t.string :city
+      t.string :region
+
+      # Browser continuity: a random id minted at login into a signed,
+      # long-lived cookie identifying the BROWSER INSTALL (never the user;
+      # worthless as a credential). Lets a repeat login from the same
+      # browser supersede its old row instead of stacking duplicate
+      # devices — robust to browser updates, since identity is the cookie,
+      # not the user agent.
+      t.string :device_id, limit: 36
+
+      # The throttled activity touch (at most one write per
+      # config.touch_every) — the column the Rails security guide's own
+      # Session.sweep recommendation always needed.
+      t.datetime :last_seen_at
+      t.string :last_seen_ip, limit: 45 # refreshed with the touch (roaming devices)
+    end
+
+    add_index :<%= table_name %>, :device_id
+    add_index :<%= table_name %>, :token_digest, unique: true
+    add_index :<%= table_name %>, :auth_method
+    add_index :<%= table_name %>, :auth_provider
+    add_index :<%= table_name %>, :country_code
+    add_index :<%= table_name %>, :last_seen_at
+  end
+
+  private
+
+  # :jsonb on PostgreSQL, :json elsewhere — same adaptive pattern as the
+  # rest of the gem ecosystem (chats, api_keys, …). match? (not equality):
+  # PostGIS apps report adapter_name "PostGIS" and are PostgreSQL too.
+  def json_column_type
+    return :jsonb if connection.adapter_name.match?(/postg/i)
+
+    :json
+  end
+end

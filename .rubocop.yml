@@ -1,0 +1,61 @@
+# MERGE our excludes with rubocop's defaults (vendor/, node_modules/, …) —
+# a bare Exclude key would REPLACE them.
+inherit_mode:
+  merge:
+    - Exclude
+
+AllCops:
+  TargetRubyVersion: 3.2
+  Exclude:
+    # The dummy host app mirrors GENERATED code: its auth files are vendored
+    # verbatim from `rails generate authentication` (Rails-omakase style) and
+    # its sessions migrations are copies of the install templates — don't
+    # lint generated-code mirrors against the gem's own style.
+    - test/dummy/**/*
+    # Generator templates are emitted into HOST apps (host style, and some
+    # carry ERB tags rubocop can't parse as Ruby).
+    - lib/generators/sessions/templates/**/*
+    # Appraisal-generated Gemfiles.
+    - gemfiles/*
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: double_quotes
+
+# Hard size metrics fight readable, well-commented domain code and thorough
+# test classes; we optimize for the latter.
+Metrics:
+  Enabled: false
+
+# The warden hook ABI fixes block parameter names (|user, warden, opts| and
+# |env, opts|) — renaming them to appease a cop would only obscure the
+# upstream contract the code mirrors.
+Naming/MethodParameterName:
+  AllowedNames: [at, by, id, ip, to, ua]
+
+# `has_sessions` is the macro and the product — it matches the ecosystem
+# grammar (has_credits, has_api_keys, has_wallets), not a predicate.
+Naming/PredicatePrefix:
+  AllowedMethods: [has_sessions]
+
+# %{client} / %{platform} are I18n interpolation tokens — annotated tokens
+# aren't a thing in I18n templates.
+Style/FormatStringToken:
+  EnforcedStyle: template
+
+# Duck-typed contracts (the ua_parser lambda, hook procs) fix keyword names
+# even where an implementation doesn't use them.
+Lint/UnusedMethodArgument:
+  AllowUnusedKeywordArguments: true
+
+# Hook lambdas spell out their kwargs (->(user:, session:, event:) { … })
+# even when a body ignores some — the names ARE the documented contract.
+Lint/UnusedBlockArgument:
+  AllowUnusedKeywordArguments: true
+
+Layout/LineLength:
+  Max: 120
+  Exclude:
+    - sessions.gemspec # the long-form rubygems description is one line by design

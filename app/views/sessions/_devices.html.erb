@@ -1,0 +1,34 @@
+<%# The live device registry — renderable from the engine OR straight from %>
+<%# any host view: render "sessions/devices", user: current_user           %>
+<%# Locals:                                                                 %>
+<%#   sessions:        the rows to render (defaults to user.sessions)       %>
+<%#   user:            whose devices (only needed when sessions: isn't given)%>
+<%#   current_session: the row serving this request (badged, not revocable) %>
+<%
+  current_session = local_assigns[:current_session] || Sessions.current(request)
+  sessions = local_assigns[:sessions] ||
+             local_assigns[:user]&.sessions&.by_recency&.to_a ||
+             []
+  routes = sessions_engine_routes if respond_to?(:sessions_engine_routes)
+%>
+<section class="sessions-devices">
+  <% if sessions.empty? %>
+    <p class="sessions-empty"><%= t("sessions.devices.empty") %></p>
+  <% else %>
+    <ul class="sessions-device-list">
+      <% sessions.each do |session| %>
+        <%= render "sessions/device", session: session, current_session: current_session, routes: routes %>
+      <% end %>
+    </ul>
+
+    <% if routes && sessions.many? %>
+      <div class="sessions-revoke-others">
+        <%= button_to t("sessions.devices.sign_out_others"),
+                      routes.others_devices_path,
+                      method: :delete,
+                      class: "sessions-button sessions-button-secondary",
+                      form: { data: { turbo_confirm: t("sessions.devices.sign_out_others_confirm") } } %>
+      </div>
+    <% end %>
+  <% end %>
+</section>

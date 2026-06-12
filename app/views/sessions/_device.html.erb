@@ -1,0 +1,40 @@
+<%# One device row. Locals: session, current_session, routes (engine proxy or nil). %>
+<% current = session == current_session %>
+<li class="sessions-device <%= "sessions-device-current" if current %>">
+  <span class="sessions-device-icon"><%= sessions_device_icon(session) %></span>
+
+  <div class="sessions-device-info">
+    <p class="sessions-device-name">
+      <%= session.device_name %>
+      <%# Auth method as a subtle pill — only when it says something a user
+          cares about (their OAuth provider, a passkey…). "password" is the
+          default and stays silent. %>
+      <% if session.auth_method_label && !session.via_password? %>
+        <span class="sessions-method-pill"><%= session.auth_method_label %></span>
+      <% end %>
+    </p>
+    <p class="sessions-device-meta">
+      <% if session.location %>
+        <span class="sessions-device-location" title="<%= t("sessions.devices.location_approximate") %>">
+          <%= [session.country_flag, session.location].compact.join(" ") %>
+        </span> ·
+      <% end %>
+      <span class="sessions-device-seen"><%= sessions_last_active_in_words(session) %></span>
+      <% if session.created_at %>
+        · <span class="sessions-device-signed-in"><%= t("sessions.devices.signed_in", date: sessions_format_date(session.created_at.to_date)) %></span>
+      <% end %>
+    </p>
+  </div>
+
+  <%# The action slot: the current session's badge sits where other rows
+      show their Log out button — one consistent right-aligned column. %>
+  <% if current %>
+    <span class="sessions-badge"><%= t("sessions.devices.this_device") %></span>
+  <% elsif routes %>
+    <%= button_to t("sessions.devices.log_out"),
+                  routes.device_path(session),
+                  method: :delete,
+                  class: "sessions-button sessions-button-revoke",
+                  form: { data: { turbo_confirm: t("sessions.devices.log_out_confirm") } } %>
+  <% end %>
+</li>

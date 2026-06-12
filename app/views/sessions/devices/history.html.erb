@@ -1,0 +1,5 @@
+<div class="sessions-page">
+  <h1 class="sessions-title"><%= t("sessions.history.title") %></h1>
+  <%= render "sessions/history", events: @events %>
+  <p><%= link_to t("sessions.history.back_to_devices"), devices_path, class: "sessions-history-link" %></p>
+</div>

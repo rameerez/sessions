@@ -1,0 +1,101 @@
+# frozen_string_literal: true
+
+# The Rails-8-shaped sessions table for a Devise app: one row = one
+# signed-in device, destroyed on logout/revocation (rows = active sessions;
+# history lives in sessions_events). Deliberately the SAME base shape
+# `rails generate authentication` creates — so if you ever migrate from
+# Devise to Rails auth, your sessions table is already waiting.
+class Create<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    primary_key_type, foreign_key_type = primary_and_foreign_key_types
+
+    create_table :<%= table_name %>, id: primary_key_type do |t|
+      # The Rails 8 authentication-generator base…
+<% if polymorphic? -%>
+      # …with a polymorphic owner (--polymorphic): every Devise scope/model
+      # gets tracked, each row remembering whose it is.
+      t.references :user, polymorphic: true, null: false, type: foreign_key_type, index: true
+<% else -%>
+      t.references :user, null: false, foreign_key: true, type: foreign_key_type
+<% end -%>
+      t.string :ip_address, limit: 45
+      t.text :user_agent # text, not string: native UAs overflow MySQL's varchar(255)
+
+      # Devise/Warden mode: SHA-256 of a random token whose raw value lives
+      # ONLY in the user's own session (OWASP: never persist raw session
+      # identifiers). The Warden adapter validates it on every request —
+      # destroy the row and that device is signed out on its next request.
+      t.string :token_digest
+
+      # The Warden scope ("user") — multi-scope Devise apps.
+      t.string :scope
+
+      # How this session started: password / oauth / google_one_tap /
+      # passkey / magic_link / otp / sso / token / unknown — plus the
+      # provider and per-method extras.
+      t.string :auth_method
+      t.string :auth_provider
+      t.send(json_column_type, :auth_detail)
+
+      # Parsed device intelligence — projections of the raw user_agent
+      # ("Chrome 137 on macOS", "MyApp 2.4.1 on Pixel 8 (Android 16)").
+      t.string :browser_name
+      t.string :browser_version
+      t.string :os_name
+      t.string :os_version
+      t.string :device_type   # desktop / smartphone / tablet / native_ios / native_android / bot / unknown
+      t.string :device_model  # "iPhone15,2", "Pixel 8" — when knowable
+      t.string :app_name      # Hotwire Native apps
+      t.string :app_version
+      t.string :app_build
+      t.send(json_column_type, :client_hints) # raw Sec-CH-UA* + X-Client-* headers, for re-parsing
+
+      # Approximate location via the trackdown gem (soft dependency).
+      t.string :country_code, limit: 2
+      t.string :country_name
+      t.string :city
+      t.string :region
+
+      # Browser continuity: a random id minted at login into a signed,
+      # long-lived cookie identifying the BROWSER INSTALL (never the user).
+      # Lets a repeat login from the same browser supersede its old row
+      # instead of stacking duplicate devices.
+      t.string :device_id, limit: 36
+
+      # The throttled activity touch (at most one write per config.touch_every).
+      t.datetime :last_seen_at
+      t.string :last_seen_ip, limit: 45
+
+      t.timestamps
+    end
+
+    add_index :<%= table_name %>, :device_id
+    add_index :<%= table_name %>, :token_digest, unique: true
+    add_index :<%= table_name %>, :auth_method
+    add_index :<%= table_name %>, :auth_provider
+    add_index :<%= table_name %>, :country_code
+    add_index :<%= table_name %>, :last_seen_at
+  end
+
+  private
+
+  # Honor the host's configured primary key type (uuid vs bigint). Reads the
+  # same setting `rails g model` uses, so an app generated with
+  # `config.generators { |g| g.orm :active_record, primary_key_type: :uuid }`
+  # gets uuid sessions tables and uuid foreign keys, automatically.
+  def primary_and_foreign_key_types
+    config = Rails.configuration.generators
+    setting = config.options[config.orm][:primary_key_type]
+    primary_key_type = setting || :primary_key
+    foreign_key_type = setting || :bigint
+    [ primary_key_type, foreign_key_type ]
+  end
+
+  # match? (not equality): PostGIS apps report adapter_name "PostGIS" and
+  # are PostgreSQL too.
+  def json_column_type
+    return :jsonb if connection.adapter_name.match?(/postg/i)
+
+    :json
+  end
+end
