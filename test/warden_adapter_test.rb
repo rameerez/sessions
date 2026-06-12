@@ -420,6 +420,28 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal 1, user.sessions.count
   end
 
+  test "a client that drops Set-Cookie can't mint unbounded adopted rows" do
+    user = create_user
+    # A pre-gem login: authenticated rack session with no sessions token…
+    post "/login", { "user" => { "email" => user.email_address, "password" => "s3kr1t-pass" } },
+         { "sessions.skip" => true, "HTTP_USER_AGENT" => UserAgents::CHROME_MAC }
+    frozen_cookie = last_response.headers["Set-Cookie"].to_s.split(";").first
+
+    # …replayed by a client that forwards cookies READ-ONLY (a native HTTP
+    # layer that attaches the WebView's cookie but discards our Set-Cookie
+    # — the production shape): every request re-enters adoption.
+    clear_cookies
+    4.times do
+      get "/me", {}, { "HTTP_COOKIE" => frozen_cookie, "HTTP_USER_AGENT" => UserAgents::CHROME_MAC }
+      assert_equal 200, last_response.status
+    end
+
+    assert_equal 1, user.sessions.count,
+                 "re-entered adoption must reuse the recent adopted row, never mint per request"
+    assert_equal({ "adopted" => true }, user.sessions.sole.auth_detail)
+    assert_equal 0, Sessions::Event.count, "and the loop leaves no junk in the trail"
+  end
+
   # --- Hook 3: failures --------------------------------------------------------------
 
   test "a wrong password records the failure with the typed identity, verbatim reason" do
@@ -432,6 +454,17 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal "invalid", event.failure_reason # warden's symbol, never embellished
     assert_equal "user", event.scope
     assert_equal "/login", event.metadata["attempted_path"]
+  end
+
+  test "failure identity also reads email_address (the omakase-era key)" do
+    # Devise apps configured with `authentication_keys = [:email_address]`
+    # post user[email_address]; the strategy fails (it reads "email"), and
+    # the failure row must still carry the typed identity for ATO triage and
+    # repeated_failed_logins.
+    post "/login", { "user" => { "email_address" => "Ghost@Example.com", "password" => "nope" } }
+
+    assert_equal 401, last_response.status
+    assert_equal "ghost@example.com", Sessions::Event.failed_logins.sole.identity
   end
 
   test "plain unauthenticated page hits record NO failure (not a credentials POST)" do

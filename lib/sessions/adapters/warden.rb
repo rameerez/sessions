@@ -36,8 +36,9 @@ module Sessions
       SKIP_ENV_KEY = "sessions.skip" # = Sessions::SKIP_ENV_KEY (set by Sessions.skip!)
 
       # The `throw :warden` message on revoked sessions — Devise's failure
-      # app surfaces it like :timeout/:session_limited (add a
-      # `devise.failure.session_revoked` translation for custom copy).
+      # app surfaces it like :timeout/:session_limited. The gem SHIPS the
+      # `devise.failure.session_revoked` copy (en + es, config/locales/);
+      # hosts override that key for custom wording.
       THROW_MESSAGE = :session_revoked
 
       module_function
@@ -185,9 +186,36 @@ module Sessions
         Sessions.safely("warden.adopt") do
           next unless row_accepts?(record)
 
+          # IDEMPOTENT, because a client that can't persist cookies re-enters
+          # adoption on EVERY request: the SESSION_KEY we write rides a
+          # Set-Cookie the client drops, so the next request adopts again —
+          # unbounded rows (production-found: a native HTTP layer that
+          # forwarded cookies read-only minted one adopted row per location
+          # ping, hundreds per ride). Same user, same scope, same UA,
+          # recently adopted → that's this same client: touch it, mint
+          # nothing. No token rotation either — a sibling client sharing the
+          # cookie jar (the app's WebView next to its native HTTP stack) may
+          # hold a VALID key to this row, and rotating would kick it.
+          if (row = recent_adopted_row(record, warden, scope))
+            Sessions.safely("warden.adopt.touch") { row.touch_last_seen!(warden.request) }
+            next
+          end
+
           row = create_row_for(record, warden, scope, suppress_login_event: true)
           row&.update_columns(auth_detail: { "adopted" => true })
         end
+      end
+
+      def recent_adopted_row(record, warden, scope)
+        model = Sessions.session_model
+        rows = model.where(user: record)
+        rows = rows.where(scope: scope.to_s) if model.column_names.include?("scope")
+        rows = rows.where(user_agent: warden.request.user_agent) if model.column_names.include?("user_agent")
+
+        rows.where(model.arel_table[:created_at].gt(24.hours.ago))
+            .order(created_at: :desc)
+            .limit(10)
+            .detect { |row| row.try(:auth_detail).to_h["adopted"] }
       end
 
       # SCOPE-PRECISE teardown: only this scope's warden entries go (the
@@ -225,7 +253,9 @@ module Sessions
           credentials = request.params[scope.to_s]
           next unless credentials.is_a?(Hash)
 
-          identity = credentials.values_at("email", "login", "username", "phone").compact.first
+          # `email_address` included: it's the omakase-era key, and Devise
+          # apps configure `authentication_keys = [:email_address]` too.
+          identity = credentials.values_at("email", "email_address", "login", "username", "phone").compact.first
 
           Sessions::Event.record_failure(
             request,

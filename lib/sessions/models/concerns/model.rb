@@ -335,7 +335,14 @@ module Sessions
 
     def sessions_record_login
       Sessions.safely("record_login") do
-        next if sessions_suppress_login_event
+        if sessions_suppress_login_event
+          # Suppressed writes (adoption) skip the trail event, dedup and
+          # the new-device hook — but never the cap: it's the hard limit on
+          # LIVE rows, and a misbehaving client looping through adoption
+          # must hit it like everyone else.
+          sessions_enforce_cap!
+          next
+        end
 
         # Same browser signing in again (abandoned session, expired
         # remember-me, browser update — anything) replaces its old row

@@ -164,6 +164,20 @@ class ModelTest < ActiveSupport::TestCase
     assert_equal "pruned", Sessions::Event.revocations.sole.revoked_reason
   end
 
+  test "the cap holds even for suppressed (adopted) writes" do
+    Sessions.config.max_sessions_per_user = 2
+    user = create_user
+
+    3.times do
+      row = user.sessions.new(ip_address: "203.0.113.7", user_agent: UserAgents::CHROME_MAC)
+      row.sessions_suppress_login_event = true
+      row.save!
+    end
+
+    assert_equal 2, user.sessions.count,
+                 "adoption skips the trail and dedup — never the hard cap on live rows"
+  end
+
   test "no cap when max_sessions_per_user is nil" do
     Sessions.config.max_sessions_per_user = nil
     user = create_user
