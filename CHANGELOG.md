@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (2026-06-11)
+## 0.1.0 (2026-06-12)
 
 First release — the missing session layer for Rails. 🔐
 
