@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.1 (2026-06-12)
+
+Production-found fix, hours after 0.1.0: a client that forwards cookies **read-only** — the canonical case is a native app's HTTP layer that attaches the WebView's cookie but drops `Set-Cookie` responses — re-enters the Devise-mode *adoption* path on every request, because the session token the gem writes never persists client-side. Each pass minted a fresh adopted row (and adoption also skipped the per-user cap), so one phone on a polling screen accumulated hundreds of "live devices" in an hour.
+
+- **Adoption is now idempotent**: a re-entering client matches its recent adopted row (same user, scope, and user agent within 24h) and just touches it — no new row, no token rotation (rotating would kick a sibling client validly holding that row's token, e.g. the app's WebView next to its native HTTP stack).
+- **The per-user session cap now applies to suppressed (adopted) writes too** — it's the hard limit on live rows, whatever path creates them.
+
+Plus a full-codebase audit pass:
+
+- **The remote-revocation kick now ships its own flash copy.** The Warden adapter throws `message: :session_revoked`, and Devise's failure app resolves it via `devise.failure.session_revoked` — a key nothing shipped, so revoked devices saw a literal "Translation missing: en.devise.failure.user.session_revoked" at the exact moment the flagship feature fired. The gem now provides the key in English and Spanish (override it like any I18n key), pinned by a test that mirrors Devise's exact lookup (`I18n.t(:"#{scope}.#{message}", scope: "devise.failure", default: [message])`).
+- **`config.strategy_methods` now truly overrides built-ins on a shared key.** The mapping merge let the built-in value win a duplicate key (e.g. remapping `"Rememberable"`), contradicting the documented host-wins contract; host entries now win both the iteration order and key conflicts.
+- **Failed-login identity capture also reads `email_address`** — the omakase-era key, and what Devise apps with `authentication_keys = [:email_address]` post. Those failures used to record `identity: nil`, quietly gutting ATO triage and `repeated_failed_logins` for that setup.
+- **The installer now validates the Devise auth model fit.** Default (non-polymorphic) mode assumes a `User` class — the same assumption `rails generate authentication` makes. A Devise app on `Member`/`Account` used to pass detection and then break at `db:migrate` (foreign key to a missing `users` table); the installer now reads `Devise.mappings` and stops with the fix (`--polymorphic`) before writing anything, and warns (without blocking) when extra scopes ride alongside `User`, since those stay silently untracked in default mode. Unreadable mappings stay permissive. README gained the matching callout.
+- **API-only hosts boot.** The engine controller's class body used `helper`/`helper_method`/`layout` unconditionally — none of which exist on `ActionController::API` — and production eager-loads engine controllers whether or not the engine is mounted, so an API-only app bundling the gem for the model/trail APIs failed to boot. The view-layer DSL is now capability-guarded (mounting the HTML page still requires a `Base`-derived parent, as documented).
+- **Generated migrations honor exotic primary-key types.** `primary_key_type: :string` (ULID-style apps) now flows through to the events table's PK and the `session_id` linkage column (previously coerced to `bigint`, breaking the trail↔registry join), and the serial pseudo-types map to their plain integer column equivalents for reference columns — a `t.bigserial` reference would mint its own sequence.
+- `sessions_format_date`/`sessions_format_time` tolerate `nil` (custom views passing a nullable column used to hit `nil.strftime` *inside* the fallback rescue).
+
 ## 0.1.0 (2026-06-12)
 
 First release — the missing session layer for Rails. 🔐
