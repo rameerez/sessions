@@ -59,6 +59,21 @@ class EventTest < ActiveSupport::TestCase
     assert_nil event.authenticatable
   end
 
+  test "record! clamps attacker-length identities to the column limit" do
+    # The identity is typed by whoever is at the form — a 10KB "email" must
+    # not become MySQL's ValueTooLong and silently cost us the failure row
+    # (that row IS the attack trail). sqlite reports no limit; simulate the
+    # MySQL column and exercise the clamp directly.
+    fake_column = Struct.new(:type, :limit).new(:string, 255)
+    real_columns = Sessions::Event.columns_hash
+    Sessions::Event.stubs(:columns_hash).returns(real_columns.merge("identity" => fake_column))
+
+    event = Sessions::Event.new(event: "failed_login", identity: "a" * 300)
+    Sessions::Event.send(:clamp_string_columns!, event)
+
+    assert_equal 255, event.identity.length
+  end
+
   test "record_failure never stores the password" do
     request = fake_request(method: "POST", path: "/session",
                            params: { email_address: "j@example.com", password: "hunter2" })

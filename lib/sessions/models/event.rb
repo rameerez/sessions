@@ -81,10 +81,25 @@ module Sessions
             event.try(:"#{name}=", value)
           end
           event.identity = normalize_identity(event.try(:identity))
+          clamp_string_columns!(event)
           event.save!
 
           Sessions.notify_event(event)
           event
+        end
+      end
+
+      # Clamp string columns to their limits BEFORE the insert: the
+      # identity is attacker-typed (a 10KB "email" must not turn into
+      # MySQL's ValueTooLong and silently cost us the failure row — that
+      # row IS the attack trail), and hosts may have pruned the text
+      # columns down to strings.
+      def clamp_string_columns!(event)
+        columns_hash.each do |name, column|
+          next unless column.type == :string && column.limit
+          next unless (value = event[name]).is_a?(String) && value.length > column.limit
+
+          event[name] = value[0, column.limit]
         end
       end
 

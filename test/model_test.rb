@@ -395,6 +395,23 @@ class ModelTest < ActiveSupport::TestCase
     assert_equal "Firefox 139 on Windows 10", row.source_line, "no IP either: device alone"
   end
 
+  test "oversized strings clamp to their column limits (MySQL varchar(255) reality)" do
+    # Rails 8's authentication generator creates user_agent as a plain
+    # string — varchar(255) under MySQL's strict mode — and real native UAs
+    # overflow it: without the clamp, the LOGIN itself raises
+    # ActiveRecord::ValueTooLong. sqlite reports no limit, so simulate the
+    # MySQL column here; the CI mysql leg proves it against the real thing.
+    fake_column = Struct.new(:type, :limit).new(:string, 255)
+    real_columns = Session.columns_hash
+    Session.stubs(:columns_hash).returns(real_columns.merge("user_agent" => fake_column))
+
+    row = Session.new(user_agent: "Mozilla/5.0 #{"x" * 300}")
+    row.send(:sessions_clamp_oversized_strings)
+
+    assert_equal 255, row.user_agent.length
+    assert row.user_agent.start_with?("Mozilla/5.0 "), "clamping keeps the head, the parseable part"
+  end
+
   test "second_factor! stamps a step-up factor onto a live session, preserving detail" do
     row = create_session_for(create_user)
     row.update!(auth_detail: { "adopted" => true })

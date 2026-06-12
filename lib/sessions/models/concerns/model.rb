@@ -225,9 +225,27 @@ module Sessions
         sessions_enrich_device_id(request)
         sessions_enrich_auth(request)
         sessions_enrich_geo(request)
+        sessions_clamp_oversized_strings
       end
 
       true # never halt the host's save chain
+    end
+
+    # Rails 8's authentication generator creates `user_agent` as a plain
+    # string — VARCHAR(255) on MySQL — and real native UAs (app prefix +
+    # WebView UA + Hotwire markers) routinely overflow it, turning a login
+    # into ActiveRecord::ValueTooLong under MySQL's strict mode. The gem's
+    # own tables use text, but on ADOPTED tables we clamp every string
+    # column to its limit AFTER parsing (the parsers saw the full value;
+    # only storage is bounded). Tracking never breaks login — and here,
+    # login itself would have broken without us.
+    def sessions_clamp_oversized_strings
+      self.class.columns_hash.each do |name, column|
+        next unless column.type == :string && column.limit
+        next unless (value = self[name]).is_a?(String) && value.length > column.limit
+
+        self[name] = value[0, column.limit]
+      end
     end
 
     def sessions_enrich_ip(request)
