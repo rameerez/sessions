@@ -171,6 +171,19 @@ class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
     assert_operator Sessions::Event.failed_logins.where(failure_reason: "rate_limited").count, :>=, 1
   end
 
+  test "rate limits OUTSIDE the sessions controller are not failed logins" do
+    # A throttled password-reset burst (or any API endpoint's rate limit)
+    # is not login activity — recording it would pollute the failed_login
+    # vocabulary the alerts count on.
+    request = ActionDispatch::Request.new(Rack::MockRequest.env_for("/passwords"))
+    request.env["action_dispatch.request.path_parameters"] = { controller: "passwords", action: "create" }
+
+    ActiveSupport::Notifications.instrument("rate_limit.action_controller",
+                                            request: request, count: 11, to: 10)
+
+    assert_equal 0, Sessions::Event.failed_logins.where(failure_reason: "rate_limited").count
+  end
+
   test "Sessions.tag labels the next login (the passkey/One Tap seam)" do
     # `Sessions.tag(request, ...)` writes the label into the rack env before
     # sign-in; injecting that env key IS the tag, without monkeypatching the

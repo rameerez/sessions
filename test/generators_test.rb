@@ -102,6 +102,25 @@ class InstallGeneratorTest < Rails::Generators::TestCase
     assert_no_migration "db/migrate/create_sessions_events.rb"
   end
 
+  test "--model on an omakase app takes the create-table path (adoption needs a table)" do
+    # The escape hatch for omakase apps with a conflicting legacy Session
+    # class: the controller shape says "omakase", but session_records does
+    # NOT exist — an add-columns migration against nothing would be
+    # unrunnable. Adoption requires the table.
+    Sessions::Generators::InstallGenerator.any_instance.stubs(:rails8_shaped_table?).returns(false)
+    Sessions::Generators::InstallGenerator.any_instance.stubs(:omakase_controller_shape?).returns(true)
+    Sessions::Generators::InstallGenerator.any_instance.stubs(:sessions_table_exists?).returns(false)
+    Sessions::Generators::InstallGenerator.any_instance.stubs(:devise_detected?).returns(false)
+
+    run_generator %w[--model=SessionRecord]
+
+    assert_migration "db/migrate/create_session_records.rb" do |migration|
+      assert_match(/create_table :session_records, id: primary_key_type/, migration)
+    end
+    assert_no_migration "db/migrate/add_sessions_columns_to_session_records.rb"
+    assert_file "app/models/session_record.rb"
+  end
+
   # --- Drift checks (footprinted's CI-drift rule) -----------------------------
   #
   # The dummy app migrates RESOLVED COPIES of these templates on every CI

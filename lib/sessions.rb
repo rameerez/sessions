@@ -40,7 +40,7 @@ require_relative "sessions/engine" if defined?(::Rails::Engine)
 #   session.device_name                       # => "Chrome on macOS"
 #   session.revoke!                           # remote logout, effective next request
 #   current_user.revoke_other_sessions!       # GitHub's "sign out everywhere else"
-#   current_user.session_events.failed_logins # the trail
+#   current_user.session_history.failed_logins # the trail, identity-matched failures included
 #
 # Plus a handful of request-side seams for flows that can't self-identify:
 #
@@ -136,11 +136,18 @@ module Sessions
     # omakase (Current.session / the signed session cookie) and
     # Devise/Warden (the per-scope token stashed in the warden session).
     # Returns nil when the request carries no live tracked session.
-    def current(request = Sessions::Current.request)
+    #
+    # Multi-scope Devise apps (user + admin signed in on one rack session)
+    # carry one tracked row per scope; pass `scope:` to pick — without it
+    # you get the first live row found, which is unambiguous for the
+    # single-scope majority:
+    #
+    #   Sessions.current(request, scope: :admin_user)
+    def current(request = Sessions::Current.request, scope: nil)
       return nil unless request
 
       safely("current") do
-        omakase_current(request) || warden_current(request) || cookie_current(request)
+        omakase_current(request) || warden_current(request, scope: scope) || cookie_current(request)
       end
     end
 
@@ -307,11 +314,12 @@ module Sessions
       nil
     end
 
-    def warden_current(request)
+    def warden_current(request, scope: nil)
       return nil unless request.env["warden"]
 
+      pattern = scope ? /\Awarden\.user\.#{Regexp.escape(scope.to_s)}\.session\z/ : /\Awarden\.user\..+\.session\z/
       request.session.to_hash.each do |key, value|
-        next unless key.to_s.match?(/\Awarden\.user\..+\.session\z/) && value.is_a?(Hash)
+        next unless key.to_s.match?(pattern) && value.is_a?(Hash)
 
         id, token = value[Adapters::Warden::SESSION_KEY]
         next unless id && token
@@ -378,11 +386,16 @@ module Sessions
       return 0 unless cap
       return 0 unless session_model_table?
 
+      # Polymorphic installs (--polymorphic) key the owner by TYPE AND id —
+      # grouping by user_id alone would treat User#42 and Organization#42
+      # as one owner and evict across them.
+      owner_keys = session_model.column_names.include?("user_type") ? %i[user_type user_id] : %i[user_id]
+
       count = 0
-      session_model.group(:user_id).count.each do |user_id, sessions_count|
+      session_model.group(*owner_keys).count.each do |owner_key, sessions_count|
         next if sessions_count <= cap
 
-        session_model.where(user_id: user_id)
+        session_model.where(owner_keys.zip(Array(owner_key)).to_h)
                      .order(created_at: :asc)
                      .limit(sessions_count - cap)
                      .each do |session|

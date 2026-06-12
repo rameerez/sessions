@@ -22,6 +22,39 @@ class EngineUiTest < ActionDispatch::IntegrationTest
     @user.sessions.order(:created_at).last
   end
 
+  test "the sudo gate fails CLOSED: a falsy gate blocks with 403" do
+    Sessions.config.require_reauthentication = ->(_controller) { false }
+    sign_in!
+    other = create_session_for(@user)
+
+    delete "/settings/sessions/#{other.id}"
+
+    assert_response :forbidden
+    assert Session.exists?(other.id), "a falsy gate must never fall through to the destructive action"
+  end
+
+  test "the sudo gate allows on truthy without rendering" do
+    Sessions.config.require_reauthentication = ->(_controller) { true }
+    sign_in!
+    other = create_session_for(@user)
+
+    delete "/settings/sessions/#{other.id}"
+
+    assert_response :see_other
+    refute Session.exists?(other.id)
+  end
+
+  test "a redirecting sudo gate owns the response and blocks the action" do
+    Sessions.config.require_reauthentication = ->(controller) { controller.redirect_to "/session/new" }
+    sign_in!
+    other = create_session_for(@user)
+
+    delete "/settings/sessions/#{other.id}"
+
+    assert_redirected_to "/session/new"
+    assert Session.exists?(other.id)
+  end
+
   test "the devices page lists sessions, badges the current one, and shows history" do
     sign_in!
     other = create_session_for(@user, ua: UserAgents::NATIVE_ANDROID)

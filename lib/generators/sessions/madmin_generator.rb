@@ -71,7 +71,7 @@ module Sessions
 
         say "\n  3. (Optional) For a per-user panel (devices + trail on the user's"
         say "     show page), add a member action to your users controller that"
-        say "     loads `user.sessions.by_recency` and `user.session_events.recent`"
+        say "     loads `user.sessions.by_recency` and `user.session_history.recent`"
         say "     — the README's Admin section has the full recipe."
 
         say "\nRevoking from the index destroys the row: that device is signed out"

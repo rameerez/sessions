@@ -51,6 +51,24 @@ module Sessions
       false
     end
 
+    # The user's COMPLETE trail slice — owned events PLUS the failed
+    # attempts typed against their email. Failures deliberately never link
+    # to accounts (`session_events` alone can't see them — recording a
+    # failure must not confirm an account exists); matching the resolved
+    # user's own identity here is the safe read side. This is what the
+    # engine's history page renders:
+    #
+    #   user.session_history.recent          # everything, newest first
+    #   user.session_history.failed_logins  # including identity-matched ones
+    def session_history
+      scope = Sessions::Event.where(authenticatable: self)
+
+      identity = Sessions::Event.normalize_identity(try(:email_address) || try(:email))
+      scope = scope.or(Sessions::Event.where(identity: identity)) if identity
+
+      scope
+    end
+
     # GitHub's "sign out everywhere else": revoke every session except
     # +current+ (defaulting to the one serving this request, so a controller
     # can call it bare). Each revocation writes its event and fires hooks.

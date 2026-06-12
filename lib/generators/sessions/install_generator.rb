@@ -140,7 +140,7 @@ module Sessions
 
         say "\nEvery login now lands on the devices page and in the trail:"
         say "  current_user.sessions.active     # live devices, revocable"
-        say "  current_user.session_events      # logins, failures, revocations"
+        say "  current_user.session_history     # the trail — logins, failures, revocations"
         say "\nEvery session, every device, every login — tracked. 🔐✨\n", :green
       end
 
@@ -194,7 +194,12 @@ module Sessions
       def adopt_existing_table?
         return @adopt_existing_table if defined?(@adopt_existing_table)
 
-        @adopt_existing_table = omakase_detected?
+        # Adoption means "enrich the table that's already there", so it
+        # requires that table. An omakase-shaped app installing with
+        # `--model SessionRecord` (because a legacy Session class is in the
+        # way) has NO session_records table yet — that's the create-table
+        # path, not an add-columns migration against nothing.
+        @adopt_existing_table = omakase_detected? && sessions_table_exists?
       end
 
       def session_model_file?

@@ -59,6 +59,35 @@ class EventTest < ActiveSupport::TestCase
     assert_nil event.authenticatable
   end
 
+  test "session_history is the user's complete trail — identity-matched failures included" do
+    user = create_user
+    create_session_for(user) # writes the linked login event
+
+    # Failures never link to accounts (enumeration safety) — the typed
+    # identity is the only correlation, and session_history owns that read.
+    Sessions::Event.record_failure(nil, identity: user.email_address, reason: :invalid)
+    Sessions::Event.record_failure(nil, identity: "someone-else@example.com", reason: :invalid)
+
+    assert_equal 2, user.session_history.count, "own login + own failure; never someone else's"
+    assert_equal 1, user.session_history.failed_logins.count
+    assert_equal 0, user.session_events.failed_logins.count,
+                 "the raw association can't see failures — that's why session_history exists"
+  end
+
+  test "the trail is append-only: updates and destroys raise" do
+    event = Sessions::Event.record!(event: "login")
+
+    assert_raises(ActiveRecord::ReadOnlyRecord) { event.update!(event: "logout") }
+    assert_raises(ActiveRecord::ReadOnlyRecord) { event.destroy }
+    assert Sessions::Event.exists?(event.id)
+
+    # The sanctioned internal paths bypass callbacks on purpose: geo
+    # backfill (update_columns/update_all), GDPR forget, retention sweeps.
+    event.update_columns(city: "Madrid")
+    assert_equal "Madrid", event.reload.city
+    assert_equal 1, Sessions::Event.where(id: event.id).delete_all
+  end
+
   test "record! clamps attacker-length identities to the column limit" do
     # The identity is typed by whoever is at the form — a 10KB "email" must
     # not become MySQL's ValueTooLong and silently cost us the failure row

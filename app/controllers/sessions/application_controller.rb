@@ -109,14 +109,24 @@ module Sessions
     end
 
     # The optional sudo gate (ASVS 3.3.4's "having re-entered login
-    # credentials"): the host's proc receives the controller and may render
-    # or redirect to its own password-confirm flow to block the action.
+    # credentials"). The host's proc receives the controller; the action
+    # proceeds ONLY when the gate returns truthy without rendering:
+    #
+    #   - render/redirect inside the gate → blocked (your confirm flow owns
+    #     the response)
+    #   - return false/nil → blocked; if the gate rendered nothing, we
+    #     answer 403 so a falsy gate can never fall through to the
+    #     destructive action (a sudo gate fails CLOSED)
+    #   - return truthy → allowed
     def sessions_reauthenticate!
       gate = Sessions.config.require_reauthentication
       return true unless gate
 
-      gate.call(self)
-      !performed?
+      allowed = gate.call(self)
+      return false if performed?
+
+      head :forbidden unless allowed
+      !!allowed
     end
 
     # Every query goes through the OWNER's sessions — you can never touch a
@@ -136,11 +146,13 @@ module Sessions
     # email is exactly what a security page is for).
     def sessions_owner_events
       user = sessions_current_user
-      scope = Sessions::Event.where(authenticatable: user)
+      return user.session_history if user.respond_to?(:session_history)
 
+      # Hosts without has_sessions on the resolved user get the same slice
+      # inline: owned events plus identity-matched failures.
+      scope = Sessions::Event.where(authenticatable: user)
       identity = Sessions::Event.normalize_identity(user.try(:email_address) || user.try(:email))
       scope = scope.or(Sessions::Event.where(identity: identity)) if identity
-
       scope
     end
   end

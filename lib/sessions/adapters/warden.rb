@@ -146,19 +146,29 @@ module Sessions
           return
         end
 
-        row = Sessions.safely("warden.fetch") do
+        # The lookup is NOT wrapped in `safely`: an ERRORED lookup and a
+        # MISSING row must be distinguishable. A row that's genuinely gone
+        # (or a token that doesn't match) means revocation → kick. A raised
+        # lookup — the sessions table unreachable, a timeout, a migration
+        # mid-deploy — means the TRACKING layer is down, and tracking must
+        # never break authentication: fail OPEN, let the request through
+        # untracked, try again next request.
+        begin
           id, token = data
           found = Sessions.session_model.find_by(id: id)
-          found if found&.sessions_token_matches?(token)
+          row = found if found&.sessions_token_matches?(token)
+        rescue StandardError => e
+          Sessions.warn("warden.fetch failed open: #{e.class}: #{e.message}")
+          return
         end
 
         if row.nil?
           # Revoked (the row is gone) or tampered (digest mismatch): the
-          # proven session_limitable sequence — clear everything, log the
-          # scope out, and hand control to the failure app. NOT wrapped in
-          # `safely`: the throw is control flow, not an error.
+          # proven session_limitable sequence — log the scope out and hand
+          # control to the failure app. NOT wrapped in `safely`: the throw
+          # is control flow, not an error.
           kick!(warden, scope)
-        elsif row.sessions_expired?
+        elsif Sessions.safely("warden.expired?") { row.sessions_expired? }
           Sessions.safely("warden.expire") { row.revoke!(reason: :expired) }
           kick!(warden, scope)
         else
@@ -180,8 +190,16 @@ module Sessions
         end
       end
 
+      # SCOPE-PRECISE teardown: only this scope's warden entries go (the
+      # serialized user key and our token stash) — an admin scope riding
+      # the same rack session, and unrelated host session data (carts,
+      # locale, return-to paths), survive a user-scope kick. Deleting the
+      # keys BEFORE logout matters: our before_logout hook then finds no
+      # token and records nothing (a kick is not a logout — the revocation
+      # event was already written by whoever destroyed the row).
       def kick!(warden, scope)
-        warden.raw_session.clear
+        warden.raw_session.delete("warden.user.#{scope}.key")
+        warden.raw_session.delete("warden.user.#{scope}.session")
         warden.logout(scope)
         throw :warden, scope: scope, message: THROW_MESSAGE
       end

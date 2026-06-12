@@ -30,8 +30,8 @@ session.revoke!                       # remote logout — that device is signed 
 current_user.revoke_other_sessions!   # GitHub's "sign out everywhere else"
 current_user.revoke_all_sessions!     # the account-takeover hammer
 
-current_user.session_events.recent                    # the login trail
-current_user.session_events.failed_logins.last_24_hours
+current_user.session_history.recent                   # the trail, identity-matched failures included
+current_user.session_history.failed_logins.last_24_hours
 
 # Admin / fraud triage — scopes are the product:
 Sessions::Event.failed_logins.last_24_hours.group(:ip_address).count
@@ -356,6 +356,8 @@ It purges trail rows past `config.events_retention` (12 months by default — CN
 ## 🔏 Security & privacy posture
 
 - **Tracking never breaks login.** Every adapter path, parser, geo lookup and hook is error-isolated; the test suite includes a chaos test that detonates every pipeline stage at once and asserts sign-in still works.
+- **Tracking outages fail OPEN.** A revoked session is a row that's *gone*; an *errored* lookup (sessions table unreachable, a migration mid-deploy, a timeout) is an outage — the request proceeds untracked instead of logging anyone out. Kicks are scope-precise, too: revoking a user session never touches an admin scope riding the same rack session, or your cart/locale data.
+- **The trail is append-only, enforced.** Updating or destroying an event raises `ActiveRecord::ReadOnlyRecord`; only the sanctioned bypass paths mutate (async geo backfill, `Sessions.forget`'s GDPR scrub, the retention sweep's `delete_all`). History you can rewrite is not history.
 - **No usable credential is ever persisted.** Devise-mode session tokens are random 32-byte values stored as SHA-256 digests; the raw token lives only in the user's own session. Rails-8-mode rows store nothing secret (the signed cookie is the credential). Nothing secret is ever logged.
 - **Revocation is server-side and immediate** (checked on the very next request, both stacks) — OWASP ASVS 7.4.1; "view and terminate any or all currently active sessions" is literally ASVS 3.3.4 / 7.5.2, the requirement this gem exists to satisfy.
 - **IPs and UAs are personal data** (GDPR Recital 30), processed under the network-security legitimate interest (Recital 49 / Art. 6(1)(f)). The gem ships bounded retention, optional IP truncation *before persistence* (`config.ip_mode = :truncated` — zeroes the last IPv4 octet / 80 IPv6 bits, the Google Analytics precedent), data minimization (no bodies, no referrers), and `Sessions.forget(user)` for erasure requests.

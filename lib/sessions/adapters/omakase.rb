@@ -110,10 +110,12 @@ module Sessions
           request = payload[:request]
           next unless request
 
-          # Only auth-shaped controllers — rate limits on other endpoints
-          # are not login activity.
+          # Only the sessions controller: a rate-limited LOGIN burst is
+          # failed-login activity; throttles elsewhere (password resets,
+          # API endpoints) are not — recording them here would put
+          # non-logins in the failed_login vocabulary.
           controller = request.path_parameters[:controller].to_s.split("/").last
-          next unless %w[sessions passwords].include?(controller)
+          next unless controller == "sessions"
 
           Sessions::Event.record_failure(
             request,

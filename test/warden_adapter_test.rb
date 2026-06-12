@@ -98,6 +98,15 @@ class WardenAdapterTest < ActiveSupport::TestCase
       user = User.find_by(email_address: request.params["user"]["email"])
       warden.set_user(user, scope: :admin)
       [200, {}, ["admin login"]]
+    in ["GET", "/admin_me"]
+      user = warden.user(:admin)
+      [200, {}, ["admin: #{user&.email_address || "none"}"]]
+    in ["POST", "/stash"]
+      warden.raw_session["host_data"] = "cart-42"
+      [200, {}, ["stashed"]]
+    in ["GET", "/current_scope"]
+      row = Sessions.current(ActionDispatch::Request.new(env), scope: request.params["scope"])
+      [200, {}, ["row scope: #{row&.scope || "none"}"]]
     in ["POST", "/reauth"]
       # devise-passkeys' sudo confirm: `sign_in(..., event:
       # :passkey_reauthentication)` → warden.set_user with that event.
@@ -315,8 +324,58 @@ class WardenAdapterTest < ActiveSupport::TestCase
 
     assert_equal 401, last_response.status
     assert_includes last_response.body, "session_revoked"
-    # The kick cleared the rack session: nothing lingers to retry with.
-    assert_empty last_request.env["rack.session"].to_hash
+    # SCOPE-PRECISE teardown: this scope's warden entries are gone (nothing
+    # lingers to retry with), but the kick never nukes the whole rack
+    # session — other scopes and unrelated host data survive.
+    session_hash = last_request.env["rack.session"].to_hash
+    refute session_hash.key?("warden.user.user.key")
+    refute session_hash.key?("warden.user.user.session")
+  end
+
+  test "a tracking-database outage fails OPEN — never logs anyone out" do
+    user = create_user
+    login!(user)
+
+    # The sessions table goes away mid-request (an outage, a migration, a
+    # timeout). An errored lookup is NOT a revocation: the request must
+    # proceed untracked, not kick every active session.
+    Session.stubs(:find_by).raises(ActiveRecord::StatementInvalid.new("sessions table unreachable"))
+
+    get "/me"
+
+    assert_equal 200, last_response.status, "a tracking outage must never log anyone out"
+    assert_includes last_response.body, "me: #{user.email_address}"
+  end
+
+  test "kicking one scope leaves other scopes and host session data alive" do
+    user = create_user
+    admin = create_user
+    login!(user)
+    post "/login_admin", { "user" => { "email" => admin.email_address } }
+    post "/stash" # unrelated host session data (a cart, a locale…)
+
+    user.sessions.sole.revoke!(reason: :admin_revoked)
+    get "/me"
+    assert_equal 401, last_response.status, "the user scope is kicked"
+
+    get "/admin_me"
+    assert_includes last_response.body, "admin: #{admin.email_address}",
+                    "the admin scope must survive a user-scope kick"
+    assert_equal "cart-42", last_request.env["rack.session"]["host_data"],
+                 "host session data must survive a kick"
+  end
+
+  test "Sessions.current(scope:) picks the right row in multi-scope sessions" do
+    user = create_user
+    admin = create_user
+    login!(user)
+    post "/login_admin", { "user" => { "email" => admin.email_address } }
+
+    get "/current_scope", { "scope" => "admin" }
+    assert_includes last_response.body, "row scope: admin"
+
+    get "/current_scope", { "scope" => "user" }
+    assert_includes last_response.body, "row scope: user"
   end
 
   test "a tampered token digest kicks the session" do

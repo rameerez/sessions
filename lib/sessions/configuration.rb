@@ -185,7 +185,10 @@ module Sessions
     # ->(controller) — optional sudo gate run before destructive actions on
     # the devices page (ASVS 3.3.4's "having re-entered login credentials").
     # nil (default) means no extra gate; wire your password-confirm flow
-    # here. Return false / render / redirect to block the action.
+    # here. The action runs only when the gate returns TRUTHY without
+    # rendering: render/redirect to take over the response, or return
+    # false/nil to block (a bare falsy gets a 403 — the gate fails closed,
+    # never through to the destructive action).
     attr_reader :require_reauthentication
 
     # The host's session-of-record model, as a string. "Session" matches

@@ -13,6 +13,37 @@ on:
       - "LICENSE.txt"
 
 jobs:
+  # Static gates: style, autoload health, and a buildable gem — fast,
+  # independent of the database matrix.
+  lint:
+    runs-on: ubuntu-latest
+
+    env:
+      RAILS_ENV: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: RuboCop
+        run: bundle exec rubocop
+
+      - name: Prepare dummy database
+        run: bundle exec rake db:create db:migrate
+
+      - name: Zeitwerk eager-load check
+        working-directory: test/dummy
+        run: bundle exec rails zeitwerk:check
+
+      - name: Gem builds
+        run: gem build sessions.gemspec
+
   # Main test suite - tests Ruby versions and Rails compatibility with SQLite
   sqlite:
     runs-on: ubuntu-latest

@@ -47,8 +47,11 @@ module Sessions
 
     # "Active now" within the touch window, else "Active 3 minutes ago".
     def sessions_last_active_in_words(session)
+      # active_now? owns the window (config.touch_every) — the badge can't
+      # honestly claim more freshness than the throttle records.
+      return t("sessions.devices.active_now") if session.respond_to?(:active_now?) && session.active_now?
+
       time = session.last_active_at
-      return t("sessions.devices.active_now") if time && time > 5.minutes.ago
       return nil unless time
 
       t("sessions.devices.active_ago", time: time_ago_in_words(time))
