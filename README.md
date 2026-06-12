@@ -233,6 +233,29 @@ Every mainstream Ruby 2FA setup creates the session at **full** authentication �
 
 Either way, `session.second_factor?` / `session.second_factor` (also on events) answer "was this login 2FA-protected?" — useful for step-up gates and admin triage. Failed second-factor attempts surface through the same seams as everything else: devise-two-factor failures land in the trail automatically (Warden failure, message verbatim); WebAuthn rescues should call `Sessions.record_failed_attempt(request, reason: e.class.name, method: :password, detail: { second_factor: "webauthn" })` — a `SignCountVerificationError` there is a possible credential-cloning signal worth alerting on.
 
+### The "Last used" badge (no JavaScript required)
+
+The conversion classic — a little "Last used" pill next to the sign-in button this browser used last time. Most implementations reach for localStorage and a sprinkle of JS; `sessions` answers it **server-side** with one lookup, because the signed browser-continuity cookie (the same one that deduplicates devices) survives logout by design:
+
+```erb
+<% last_login = Sessions.last_login(request) %>
+
+<%= button_to "Sign in with Google", ... %>
+<% if last_login&.auth_method == "oauth" && last_login.auth_provider == "google" %>
+  <span class="badge">Last used</span>
+<% end %>
+
+<%= button_to "Sign in with passkey", ... %>
+<% if last_login&.auth_method == "passkey" %>
+  <span class="badge">Last used</span>
+<% end %>
+```
+
+`last_login` returns the most recent login **event** from this browser (or nil for browsers that never signed in, cleared cookies, or tampered values — the cookie is signed), so you also get `auth_method_label` for copy and `occurred_at` for "last used 2 days ago". It's device-scoped, not account-scoped — it reflects whoever last signed in from this browser, which is exactly what a signed-out login page can honestly know — and it's read-only: it never mints the cookie.
+
+> [!NOTE]
+> If you fragment- or page-cache your login page, render the badge outside the cached fragment — it's per-browser by nature.
+
 ### Repeated failed attempts ("someone is trying to get in")
 
 Per-attempt alerts are notification fatigue *and* an abuse vector (an attacker hammering the form would flood the victim's inbox), so the gem ships **threshold-crossing** detection instead — the hook fires exactly once when an identity crosses the line inside the window:

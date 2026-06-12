@@ -42,10 +42,12 @@ require_relative "sessions/engine" if defined?(::Rails::Engine)
 #   current_user.revoke_other_sessions!       # GitHub's "sign out everywhere else"
 #   current_user.session_events.failed_logins # the trail
 #
-# Plus four request-side seams for flows that can't self-identify:
+# Plus a handful of request-side seams for flows that can't self-identify:
 #
 #   Sessions.tag(request, method: :passkey)   # label the upcoming login
+#   Sessions.skip!(request)                   # "neither a login nor a failure" (2FA handoffs)
 #   Sessions.current(request)                 # this request's session row
+#   Sessions.last_login(request)              # how this browser last signed in ("Last used" badge)
 #   Sessions.record_failed_attempt(request, identity: params[:email], reason: :invalid_password)
 #   Sessions.track_login(user, request, method: :sso)
 #
@@ -139,6 +141,34 @@ module Sessions
 
       safely("current") do
         omakase_current(request) || warden_current(request) || cookie_current(request)
+      end
+    end
+
+    # The most recent login EVENT from THIS BROWSER — works on the login
+    # page, signed out, because the browser-continuity cookie (the same one
+    # that deduplicates devices) survives logout by design. This is the
+    # one-lookup answer behind the "Last used" badge next to your sign-in
+    # buttons:
+    #
+    #   <% if (last = Sessions.last_login(request))&.auth_provider == "google" %>
+    #     <span class="badge">Last used</span>
+    #   <% end %>
+    #
+    # The event carries auth_method / auth_provider / auth_method_label /
+    # occurred_at ("last used 2 days ago"). Device-scoped, not
+    # account-scoped: it reflects whoever last signed in from this browser
+    # — exactly what a login page can honestly know. Returns nil for
+    # browsers that never signed in, cleared cookies, or tampered values
+    # (the cookie is signed). Read-only: never mints the cookie.
+    def last_login(request)
+      return nil unless request.respond_to?(:cookie_jar)
+
+      safely("last_login") do
+        device_id = request.cookie_jar.signed[DEVICE_COOKIE]
+        next nil if device_id.blank?
+
+        Sessions::Event.logins.where(device_id: device_id.to_s[0, 36])
+                       .order(occurred_at: :desc).first
       end
     end
 

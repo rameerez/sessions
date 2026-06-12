@@ -1,6 +1,14 @@
-<%# Vendored shape from the authentication generator's sessions/new view %>
+<%# Vendored shape from the authentication generator's sessions/new view,
+    plus the README's "Last used" badge recipe: the browser-continuity
+    cookie outlives logout, so the login page can honestly say how this
+    browser last signed in — no JavaScript, no localStorage. %>
+<% last_login = Sessions.last_login(request) %>
+
 <%= form_with url: session_path do |form| %>
   <%= form.email_field :email_address, required: true, autocomplete: "username", placeholder: "Enter your email address" %>
   <%= form.password_field :password, required: true, autocomplete: "current-password", placeholder: "Enter your password", maxlength: 72 %>
   <%= form.submit "Sign in" %>
+  <% if last_login&.via_password? %>
+    <span class="sessions-last-used-badge">Last used</span>
+  <% end %>
 <% end %>

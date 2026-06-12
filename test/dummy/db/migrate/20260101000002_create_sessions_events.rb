@@ -20,6 +20,7 @@ class CreateSessionsEvents < ActiveRecord::Migration[7.1]
       t.send(session_id_column_type, :session_id)
 
       t.string :identity
+      t.string :device_id, limit: 36
       t.string :auth_method
       t.string :auth_provider
       t.send(json_column_type, :auth_detail)
@@ -55,6 +56,7 @@ class CreateSessionsEvents < ActiveRecord::Migration[7.1]
     add_index :sessions_events, %i[authenticatable_type authenticatable_id occurred_at],
               name: "index_sessions_events_on_authenticatable_and_occurred_at"
     add_index :sessions_events, %i[event occurred_at]
+    add_index :sessions_events, %i[device_id occurred_at]
     add_index :sessions_events, :identity
     add_index :sessions_events, :ip_address
     add_index :sessions_events, :session_id

@@ -335,6 +335,10 @@ module Sessions
             auth_method: try(:auth_method),
             auth_provider: try(:auth_provider),
             auth_detail: try(:auth_detail).presence,
+            # The browser-continuity id rides the trail too: it's what lets
+            # Sessions.last_login answer "how did this browser last sign
+            # in" AFTER logout destroys the row (the "Last used" badge).
+            device_id: try(:device_id).presence,
             metadata: new_device ? { "new_device" => true } : nil
           )
         )
