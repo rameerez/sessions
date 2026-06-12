@@ -37,12 +37,15 @@ module Sessions
 
     validates :event, presence: true, inclusion: { in: EVENTS }
 
-    # APPEND-ONLY, enforced: history is evidence, and evidence you can
-    # rewrite is worthless. Every legitimate internal mutation already goes
-    # through callback-bypassing APIs — the geolocate job backfills geo via
+    # APPEND-ONLY at the model-contract level: normal AR mutations raise;
+    # history is evidence, and evidence you can casually rewrite is
+    # worthless. Every legitimate internal mutation already goes through
+    # callback-bypassing APIs — the geolocate job backfills geo via
     # update_columns/update_all, `Sessions.forget` nulls identities via
     # update_all (GDPR), the sweep and `dependent: :delete_all` purge via
     # delete_all — so the callback paths can refuse everything else loudly.
+    # (Those bypass APIs remain public Active Record; this is a guardrail,
+    # not a database constraint.)
     before_update { raise ActiveRecord::ReadOnlyRecord, "sessions_events are append-only history" }
     before_destroy { raise ActiveRecord::ReadOnlyRecord, "sessions_events are append-only history (retention purges go through delete_all)" }
 

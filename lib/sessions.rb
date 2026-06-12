@@ -147,7 +147,13 @@ module Sessions
       return nil unless request
 
       safely("current") do
-        omakase_current(request) || warden_current(request, scope: scope) || cookie_current(request)
+        if scope
+          # An explicit scope is a Warden concept — answering it from
+          # Current.session (the omakase shortcut) would ignore it.
+          warden_current(request, scope: scope)
+        else
+          omakase_current(request) || warden_current(request) || cookie_current(request)
+        end
       end
     end
 
