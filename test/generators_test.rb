@@ -3,6 +3,7 @@
 require "test_helper"
 require "rails/generators/test_case"
 require "generators/sessions/install_generator"
+require "generators/sessions/upgrade_generator"
 require "generators/sessions/views_generator"
 require "generators/sessions/madmin_generator"
 
@@ -23,10 +24,12 @@ class InstallGeneratorTest < Rails::Generators::TestCase
     assert_migration "db/migrate/add_sessions_columns_to_sessions.rb" do |migration|
       assert_match(/change_table :sessions/, migration)
       assert_match(/t\.string :token_digest/, migration)
+      assert_match(/t\.string :adoption_key/, migration)
       # Column types resolve at MIGRATION RUN time (jsonb on pg, json
       # elsewhere) so one migration file works across the dev/prod DB split.
       assert_match(/t\.send\(json_column_type, :auth_detail\)/, migration)
       assert_match(/add_index :sessions, :token_digest, unique: true/, migration)
+      assert_match(/add_index :sessions, :adoption_key, unique: true/, migration)
     end
     assert_migration "db/migrate/create_sessions_events.rb" do |migration|
       assert_match(/create_table :sessions_events/, migration)
@@ -48,6 +51,7 @@ class InstallGeneratorTest < Rails::Generators::TestCase
       assert_match(/create_table :sessions, id: primary_key_type/, migration)
       assert_match(/t\.references :user, null: false, foreign_key: true, type: foreign_key_type/, migration)
       assert_match(/t\.text :user_agent/, migration)
+      assert_match(/t\.string :adoption_key/, migration)
       assert_match(/primary_and_foreign_key_types/, migration) # uuid/bigint adaptivity
     end
     assert_file "app/models/session.rb" do |model|
@@ -220,6 +224,35 @@ class InstallGeneratorTest < Rails::Generators::TestCase
     Sessions::Generators::InstallGenerator.any_instance.stubs(:omakase_controller_shape?).returns(false)
     Sessions::Generators::InstallGenerator.any_instance.stubs(:sessions_table_exists?).returns(false)
     Sessions::Generators::InstallGenerator.any_instance.stubs(:devise_detected?).returns(true)
+  end
+end
+
+class UpgradeGeneratorTest < Rails::Generators::TestCase
+  tests Sessions::Generators::UpgradeGenerator
+  destination File.expand_path("../tmp/generators", __dir__)
+  setup :prepare_destination
+
+  teardown do
+    FileUtils.rm_rf(destination_root)
+  end
+
+  test "generates the adoption-key upgrade migration" do
+    run_generator
+
+    assert_migration "db/migrate/add_sessions_adoption_key_to_sessions.rb" do |migration|
+      assert_match(/add_column :sessions, :adoption_key, :string/, migration)
+      assert_match(/add_index :sessions, :adoption_key, unique: true/, migration)
+      assert_match(/column_exists\?\(:sessions, :adoption_key\)/, migration)
+    end
+  end
+
+  test "--model targets custom session tables" do
+    run_generator %w[--model=SessionRecord]
+
+    assert_migration "db/migrate/add_sessions_adoption_key_to_session_records.rb" do |migration|
+      assert_match(/class AddSessionsAdoptionKeyToSessionRecords/, migration)
+      assert_match(/add_column :session_records, :adoption_key, :string/, migration)
+    end
   end
 end
 

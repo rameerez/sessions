@@ -3,6 +3,7 @@
 require "test_helper"
 require "rack/test"
 require "rack/session"
+require "timeout"
 
 # The Devise/Warden adapter, exercised against a REAL Warden::Manager rack
 # stack — the same class-level hook ABI Devise rides (warden 1.2.9, frozen
@@ -11,6 +12,8 @@ require "rack/session"
 # apps run full Devise on this adapter.
 class WardenAdapterTest < ActiveSupport::TestCase
   include Rack::Test::Methods
+
+  self.use_transactional_tests = false
 
   SESSION_SECRET = SecureRandom.hex(64)
 
@@ -442,6 +445,55 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal 0, Sessions::Event.count, "and the loop leaves no junk in the trail"
   end
 
+  test "adoption dedupes across webview and native HTTP user agents" do
+    user = create_user
+
+    adopt!(user, ua: UserAgents::NATIVE_ANDROID)
+    adopt!(user, ua: "MyApp Android 2.4.1 (build 241; Android 16; sdk 36; Pixel 8)")
+
+    assert_equal 1, user.sessions.count,
+                 "one physical device can present both WebView and native-client UAs"
+    assert_equal({ "adopted" => true }, user.sessions.sole.auth_detail)
+  end
+
+  test "adoption reuses adopted rows older than the old 24 hour window" do
+    user = create_user
+    old_row = create_adopted_row_for(user, ua: UserAgents::NATIVE_ANDROID, created_at: 2.days.ago)
+
+    adopt!(user, ua: UserAgents::NATIVE_ANDROID)
+
+    assert_equal [old_row.id], user.sessions.ids,
+                 "adoption is a one-time pre-gem marker, not a one-per-day row"
+    assert_not_nil old_row.reload.last_seen_at
+  end
+
+  test "concurrent adoption bursts collapse to one adopted row" do
+    user = create_user
+    thread_count = 4
+    errors = Queue.new
+
+    with_create_row_barrier(thread_count) do
+      threads = thread_count.times.map do
+        Thread.new do
+          ActiveRecord::Base.connection_pool.with_connection do
+            adopt!(user, ua: UserAgents::NATIVE_ANDROID)
+          end
+        rescue StandardError => e
+          errors << e
+        end
+      end
+
+      threads.each(&:join)
+    end
+
+    raise errors.pop unless errors.empty?
+
+    assert_equal 1, user.sessions.count,
+                 "parallel requests with no SESSION_KEY must not all win the adoption insert"
+    assert_equal({ "adopted" => true }, user.sessions.sole.auth_detail)
+    assert_equal 0, Sessions::Event.count
+  end
+
   # --- Hook 3: failures --------------------------------------------------------------
 
   test "a wrong password records the failure with the typed identity, verbatim reason" do
@@ -548,5 +600,56 @@ class WardenAdapterTest < ActiveSupport::TestCase
     after = Warden::Manager.instance_variable_get(:@_after_set_user)&.size
 
     assert_equal before, after
+  end
+
+  private
+
+  FakeWarden = Struct.new(:request, :session_data) do
+    def session(scope)
+      session_data[scope.to_s] ||= {}
+    end
+  end
+
+  def adopt!(user, ua:, scope: :user)
+    Sessions::Adapters::Warden.adopt_preexisting_session(user, fake_warden(ua: ua), scope)
+  end
+
+  def fake_warden(ua:)
+    FakeWarden.new(fake_request(ua: ua), {})
+  end
+
+  def create_adopted_row_for(user, ua:, created_at:)
+    row = user.sessions.build(
+      scope: "user",
+      ip_address: "203.0.113.7",
+      user_agent: ua,
+      token_digest: Sessions.token_digest(Sessions.generate_token),
+      auth_detail: { "adopted" => true }
+    )
+    row.sessions_suppress_login_event = true
+    Sessions.with_request(fake_request(ua: ua)) { row.save! }
+    row.update_columns(created_at: created_at, updated_at: created_at, last_seen_at: nil)
+    row
+  end
+
+  def with_create_row_barrier(thread_count, &block)
+    original = Sessions::Adapters::Warden.method(:create_row_for)
+    ready = Queue.new
+    release = Queue.new
+
+    replacement = lambda do |*args, **kwargs|
+      ready << true
+      release.pop
+      original.call(*args, **kwargs)
+    end
+
+    barrier = Thread.new do
+      Timeout.timeout(5) { thread_count.times { ready.pop } }
+      thread_count.times { release << true }
+    end
+
+    Sessions::Adapters::Warden.stub(:create_row_for, replacement, &block)
+  ensure
+    barrier&.join
   end
 end

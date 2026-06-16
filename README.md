@@ -96,6 +96,17 @@ That's it. Every sign-in from now on lands on the devices page and in the trail 
 >
 > **API-only app?** The gem boots and tracks fine (use the model APIs and `Sessions.track_login`), but the devices page is HTML — mounting the engine needs an `ActionController::Base`-derived `config.parent_controller`, which API-only apps don't have.
 
+### Upgrading
+
+Existing apps upgrading from 0.1.0 or 0.1.1 should copy the upgrade migration and run it:
+
+```bash
+rails generate sessions:upgrade
+rails db:migrate
+```
+
+This adds `sessions.adoption_key`, the portable unique guard that makes pre-gem session adoption atomic under concurrent native-app request bursts. Fresh installs already get it from `sessions:install`.
+
 ## What `sessions` does (and doesn't) do
 
 **Does:**

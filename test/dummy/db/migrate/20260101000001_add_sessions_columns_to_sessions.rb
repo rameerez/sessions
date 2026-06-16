@@ -11,6 +11,7 @@ class AddSessionsColumnsToSessions < ActiveRecord::Migration[7.1]
     change_table :sessions, bulk: true do |t|
       t.string :token_digest
       t.string :scope
+      t.string :adoption_key
 
       t.string :auth_method
       t.string :auth_provider
@@ -40,6 +41,7 @@ class AddSessionsColumnsToSessions < ActiveRecord::Migration[7.1]
 
     add_index :sessions, :device_id
     add_index :sessions, :token_digest, unique: true
+    add_index :sessions, :adoption_key, unique: true
     add_index :sessions, :auth_method
     add_index :sessions, :auth_provider
     add_index :sessions, :country_code

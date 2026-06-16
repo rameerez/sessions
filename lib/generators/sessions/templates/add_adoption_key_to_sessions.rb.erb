@@ -1,0 +1,14 @@
+# frozen_string_literal: true
+
+# v0.1.2 upgrade: adopted rows are keyed by owner+scope so clients that never
+# persist Set-Cookie responses cannot create unbounded duplicate sessions.
+# Existing adopted rows keep NULL keys; the adapter claims one lazily on the
+# next request. Normal, non-adopted sessions also keep NULL, so this plain
+# unique index behaves like a portable partial unique index across PostgreSQL,
+# MySQL and SQLite.
+class AddSessionsAdoptionKeyTo<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    add_column :<%= table_name %>, :adoption_key, :string unless column_exists?(:<%= table_name %>, :adoption_key)
+    add_index :<%= table_name %>, :adoption_key, unique: true unless index_exists?(:<%= table_name %>, :adoption_key)
+  end
+end

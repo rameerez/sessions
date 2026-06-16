@@ -17,6 +17,12 @@ class AddSessionsColumnsTo<%= table_name.camelize %> < ActiveRecord::Migration<%
       # The Warden scope ("user") — multi-scope Devise apps.
       t.string :scope
 
+      # Adopted sessions (pre-gem logins that had no sessions token yet)
+      # get one deterministic owner+scope key. Normal sessions keep this
+      # NULL, so the unique index below constrains only adopted rows while
+      # staying portable across PostgreSQL, MySQL and SQLite.
+      t.string :adoption_key
+
       # How this session started: password / oauth / google_one_tap /
       # passkey / magic_link / otp / sso / token / unknown — plus the
       # provider ("google", "apple", "github") and per-method extras
@@ -62,6 +68,7 @@ class AddSessionsColumnsTo<%= table_name.camelize %> < ActiveRecord::Migration<%
 
     add_index :<%= table_name %>, :device_id
     add_index :<%= table_name %>, :token_digest, unique: true
+    add_index :<%= table_name %>, :adoption_key, unique: true
     add_index :<%= table_name %>, :auth_method
     add_index :<%= table_name %>, :auth_provider
     add_index :<%= table_name %>, :country_code

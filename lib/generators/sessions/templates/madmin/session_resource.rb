@@ -36,6 +36,7 @@ class SessionResource < Madmin::Resource
   # NEVER rendered: the token digest is a credential hash, and the raw
   # header blobs are noise next to the parsed columns above.
   attribute :token_digest, show: false, form: false
+  attribute :adoption_key, show: false, form: false
   attribute :auth_detail, show: false, form: false
   attribute :client_hints, show: false, form: false
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2 (2026-06-16)
+
+Production-found hardening for Devise/Warden adoption, the path that turns already-authenticated pre-gem sessions into registry rows.
+
+- **Adoption is now keyed by owner + scope, not user agent or time.** One pre-existing authenticated session marker is enough; Hotwire Native devices legitimately present both a WebView UA and a native HTTP-client UA, and clients that drop `Set-Cookie` responses must not mint one adopted row per UA or per day.
+- **Concurrent adoption bursts are now atomic when the upgrade migration has run.** Adopted rows get a nullable `adoption_key` with a plain unique index. Normal sessions keep it `NULL`, so the index behaves like a portable partial unique index across PostgreSQL, MySQL and SQLite. Racing requests either create the one keyed row or catch the uniqueness collision, re-select it, and touch it — still inside `Sessions.safely`, so tracking never breaks login.
+- **Existing installs have an explicit upgrade path.** Run `rails generate sessions:upgrade` and `rails db:migrate` to add `sessions.adoption_key`. Fresh installs get the column from `sessions:install`.
+- **The adapter degrades gracefully before the migration.** If `adoption_key` is absent, it still reuses any existing adopted row for the same owner + scope, eliminating the UA split and 24-hour leak while the schema upgrade is pending; the database-level race guarantee starts once the migration is deployed.
+
 ## 0.1.1 (2026-06-12)
 
 Production-found fix, hours after 0.1.0: a client that forwards cookies **read-only** — the canonical case is a native app's HTTP layer that attaches the WebView's cookie but drops `Set-Cookie` responses — re-enters the Devise-mode *adoption* path on every request, because the session token the gem writes never persists client-side. Each pass minted a fresh adopted row (and adoption also skipped the per-user cap), so one phone on a polling screen accumulated hundreds of "live devices" in an hour.

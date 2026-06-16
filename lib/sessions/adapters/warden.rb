@@ -108,17 +108,22 @@ module Sessions
         end
       end
 
-      def create_row_for(record, warden, scope, suppress_login_event: false)
+      def create_row_for(record, warden, scope, suppress_login_event: false, attributes: {})
         token = Sessions.generate_token
         request = warden.request
+        model = Sessions.session_model
 
-        row = Sessions.session_model.new(
+        row = model.new(
           user: record,
           scope: scope.to_s,
           ip_address: Sessions::IpAddress.resolve(request),
           user_agent: request.user_agent,
           token_digest: Sessions.token_digest(token)
-        )
+        ).tap do |session|
+          attributes.each do |column, value|
+            session[column] = value if model.column_names.include?(column.to_s)
+          end
+        end
         row.sessions_suppress_login_event = suppress_login_event
         Sessions.with_request(request) { row.save! }
 
@@ -188,34 +193,79 @@ module Sessions
 
           # IDEMPOTENT, because a client that can't persist cookies re-enters
           # adoption on EVERY request: the SESSION_KEY we write rides a
-          # Set-Cookie the client drops, so the next request adopts again —
-          # unbounded rows (production-found: a native HTTP layer that
-          # forwarded cookies read-only minted one adopted row per location
-          # ping, hundreds per ride). Same user, same scope, same UA,
-          # recently adopted → that's this same client: touch it, mint
-          # nothing. No token rotation either — a sibling client sharing the
-          # cookie jar (the app's WebView next to its native HTTP stack) may
-          # hold a VALID key to this row, and rotating would kick it.
-          if (row = recent_adopted_row(record, warden, scope))
+          # Set-Cookie the client drops, so the next request adopts again.
+          #
+          # Adoption is intentionally coarse: it is a low-fidelity marker for
+          # "this owner already had an authenticated session when the gem
+          # arrived", not a real login. One owner+scope marker is enough. Do
+          # not key it on UA (Hotwire Native devices legitimately use WebView
+          # and native-client UAs) or time (cookie-dropping clients would mint
+          # one per day forever). When the adoption_key column is present, the
+          # unique index makes the first concurrent burst atomic.
+          adoption_key = adoption_key_for(record, scope)
+          if (row = adopted_row(record, scope, adoption_key: adoption_key))
             Sessions.safely("warden.adopt.touch") { row.touch_last_seen!(warden.request) }
             next
           end
 
-          row = create_row_for(record, warden, scope, suppress_login_event: true)
-          row&.update_columns(auth_detail: { "adopted" => true })
+          create_adopted_row(record, warden, scope, adoption_key: adoption_key)
         end
       end
 
-      def recent_adopted_row(record, warden, scope)
+      def create_adopted_row(record, warden, scope, adoption_key:)
+        attributes = { auth_detail: { "adopted" => true } }
+        attributes[:adoption_key] = adoption_key if adoption_key_column?
+
+        create_row_for(record, warden, scope, suppress_login_event: true, attributes: attributes)
+      rescue ActiveRecord::RecordNotUnique
+        adopted_row(record, scope, adoption_key: adoption_key)&.tap do |row|
+          Sessions.safely("warden.adopt.touch") { row.touch_last_seen!(warden.request) }
+        end
+      end
+
+      def adopted_row(record, scope, adoption_key:)
         model = Sessions.session_model
         rows = model.where(user: record)
         rows = rows.where(scope: scope.to_s) if model.column_names.include?("scope")
-        rows = rows.where(user_agent: warden.request.user_agent) if model.column_names.include?("user_agent")
 
-        rows.where(model.arel_table[:created_at].gt(24.hours.ago))
-            .order(created_at: :desc)
-            .limit(10)
-            .detect { |row| row.try(:auth_detail).to_h["adopted"] }
+        row = model.find_by(adoption_key: adoption_key) if adoption_key_column?(model) && adoption_key.present?
+        row = nil unless adopted_row?(row)
+        row ||= rows.order(created_at: :desc).detect { |candidate| adopted_row?(candidate) }
+
+        claim_adoption_key(row, adoption_key)
+      end
+
+      def adopted_row?(row)
+        row && row.try(:auth_detail).to_h["adopted"]
+      end
+
+      def claim_adoption_key(row, adoption_key)
+        return row unless row
+        return row unless adoption_key_column?(row.class)
+        return row if adoption_key.blank? || row.try(:adoption_key).present?
+
+        row.update_columns(adoption_key: adoption_key)
+        row.adoption_key = adoption_key
+        row
+      rescue ActiveRecord::RecordNotUnique
+        row.class.find_by(adoption_key: adoption_key) || row
+      end
+
+      def adoption_key_for(record, scope)
+        owner_id = record.respond_to?(:to_key) ? Array(record.to_key).join("/") : record.try(:id)
+        return if owner_id.blank?
+
+        owner_type = if record.class.respond_to?(:polymorphic_name)
+                       record.class.polymorphic_name
+                     else
+                       record.class.name
+                     end
+
+        "adopt:#{Sessions.token_digest([owner_type, owner_id, scope.to_s].join("\0"))}"
+      end
+
+      def adoption_key_column?(model = Sessions.session_model)
+        model.column_names.include?("adoption_key")
       end
 
       # SCOPE-PRECISE teardown: only this scope's warden entries go (the
