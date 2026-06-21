@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 (2026-06-21)
+
+Auth-safety correction for the Hotwire Native / Devise remember-me hardening introduced in 0.1.3.
+
+- **Tracking can no longer turn quiet housekeeping into logout.** 0.1.3 correctly made same-device remember-me restores quiet, but it still treated a missing/mismatched tracking row as session liveness failure. That crossed the gem's own boundary: the registry decorates Devise/Rails auth, it does not own it. Warden fetch now kicks only when the missing row has an explicit `revoked` or `expired` tombstone event; quiet supersede, token mismatch, database lookup errors, and stale tracking keys fail open and clear only the gem's tracking key.
+- **Remembered Warden restores stay quiet.** Same-device remember-me restores still reattach to the existing row without a duplicate login event, preserving the 0.1.3 noise reduction. The tokenless `[row_id, nil]` value is now only a tracking hint: if the signed browser-continuity cookie matches, the row may be touched; if it does not, tracking is dropped for that request and Devise/Rails continue to own authentication.
+
 ## 0.1.3 (2026-06-21)
 
 Production-found hardening for Hotwire Native / Devise remember-me startup flows, plus compatibility and generated admin-schema fixes.

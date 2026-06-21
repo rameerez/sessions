@@ -123,6 +123,11 @@ class WardenAdapterTest < ActiveSupport::TestCase
     in ["GET", "/current_scope"]
       row = Sessions.current(ActionDispatch::Request.new(env), scope: request.params["scope"])
       [200, {}, ["row scope: #{row&.scope || "none"}"]]
+    in ["POST", "/force_tokenless_tracking"]
+      warden.user
+      data = warden.raw_session["warden.user.user.session"] ||= {}
+      data[Sessions::Adapters::Warden::SESSION_KEY] = [request.params["id"], nil]
+      [200, {}, ["tokenless tracking installed"]]
     in ["POST", "/reauth"]
       # devise-passkeys' sudo confirm: `sign_in(..., event:
       # :passkey_reauthentication)` → warden.set_user with that event.
@@ -355,6 +360,10 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal "native_ios", event.device_type
     assert_equal "password", event.auth_method
     assert_equal({ "remembered" => true }, event.auth_detail)
+
+    id, token = last_request.env["rack.session"]["warden.user.user.session"]["sessions"]
+    assert_equal row.id, id
+    assert row.sessions_token_matches?(token), "remembered document restore must install a normal tracking token"
   end
 
   test "remembered HTML requests still record the login immediately" do
@@ -367,9 +376,13 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal UserAgents::NATIVE_IOS, row.user_agent
     assert_equal({ "remembered" => true }, row.auth_detail)
     assert_equal 1, Sessions::Event.logins.count
+
+    id, token = last_request.env["rack.session"]["warden.user.user.session"]["sessions"]
+    assert_equal row.id, id
+    assert row.sessions_token_matches?(token), "remembered HTML restore must stay token-backed"
   end
 
-  test "remembered restores for an already-live device are quiet housekeeping" do
+  test "remembered restores for an already-live device are quiet tracking housekeeping" do
     user = create_user
     existing = user.sessions.build(
       scope: "user",
@@ -393,6 +406,10 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal existing.id, user.sessions.sole.id
     assert_equal 0, Sessions::Event.count, "remember-me refreshes for a known device are not user-visible events"
 
+    id, token = last_request.env["rack.session"]["warden.user.user.session"]["sessions"]
+    assert_equal existing.id, id
+    assert_nil token, "tokenless tracking hints must never be treated as auth credentials"
+
     get "/me", {}, html_native_headers
     assert_equal 200, last_response.status
     assert_equal 1, user.sessions.count
@@ -408,6 +425,40 @@ class WardenAdapterTest < ActiveSupport::TestCase
 
     assert_equal 200, last_response.status
     assert_not_nil row.reload.last_seen_at
+  end
+
+  test "quietly superseded tracking row never logs out a still-authenticated Warden session" do
+    user = create_user
+    login!(user)
+    row = user.sessions.sole
+
+    row.revocation_reason = :superseded
+    row.destroy!
+
+    assert_equal 0, Sessions::Event.where(session_id: row.id, event: %w[revoked expired]).count
+
+    get "/me"
+
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, "me: #{user.email_address}"
+    refute last_request.env["rack.session"]["warden.user.user.session"].key?(Sessions::Adapters::Warden::SESSION_KEY)
+  end
+
+  test "legacy tokenless tracking state from 0.1.3 fails open when its row is only housekeeping-gone" do
+    user = create_user
+    login!(user)
+    row = user.sessions.sole
+
+    post "/force_tokenless_tracking", { "id" => row.id }
+    assert_equal 200, last_response.status
+    row.revocation_reason = :superseded
+    row.destroy!
+
+    get "/me"
+
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, "me: #{user.email_address}"
+    refute last_request.env["rack.session"]["warden.user.user.session"].key?(Sessions::Adapters::Warden::SESSION_KEY)
   end
 
   test "revoking the row remotely kicks the device on its next request" do
@@ -473,14 +524,16 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_includes last_response.body, "row scope: user"
   end
 
-  test "a tampered token digest kicks the session" do
+  test "a mismatched tracking token fails open and clears only the tracking key" do
     user = create_user
     login!(user)
     user.sessions.sole.update_columns(token_digest: Sessions.token_digest("attacker"))
 
     get "/me"
 
-    assert_equal 401, last_response.status
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, "me: #{user.email_address}"
+    refute last_request.env["rack.session"]["warden.user.user.session"].key?(Sessions::Adapters::Warden::SESSION_KEY)
   end
 
   test "opt-in idle expiry kicks and records at resume" do

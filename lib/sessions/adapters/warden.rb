@@ -179,31 +179,48 @@ module Sessions
         end
 
         # The lookup is NOT wrapped in `safely`: an ERRORED lookup and a
-        # MISSING row must be distinguishable. A row that's genuinely gone
-        # (or a token that doesn't match) means revocation → kick. A raised
-        # lookup — the sessions table unreachable, a timeout, a migration
-        # mid-deploy — means the TRACKING layer is down, and tracking must
-        # never break authentication: fail OPEN, let the request through
-        # untracked, try again next request.
+        # MISSING row must be distinguishable from a raised lookup, but a
+        # missing/mismatched tracking row is still not automatically auth
+        # state. Only an explicit revoked/expired tombstone event may kick.
+        # A raised lookup — the sessions table unreachable, a timeout, a
+        # migration mid-deploy — means the TRACKING layer is down, and
+        # tracking must never break authentication: fail OPEN, let the request
+        # through untracked, try again next request.
         begin
           id, token = session_token
           found = Sessions.session_model.find_by(id: id)
-          row = if found&.sessions_token_matches?(token)
-                  found
-                elsif token.nil? && existing_row_session?(found, record, scope, warden.request)
-                  found
-                end
+          if token.blank?
+            # v0.1.3 intentionally reattached remember-me restores to an
+            # existing device row without writing another login event, storing
+            # [row_id, nil] in Warden. That is fine as a tracking hint, but it
+            # must never become an auth/liveness check. Touch when the signed
+            # browser-continuity cookie still agrees; otherwise clear only the
+            # gem's tracking key and let Devise/Rails keep owning auth.
+            # Source: https://github.com/rameerez/sessions/blob/v0.1.3/CHANGELOG.md
+            if existing_row_session?(found, record, scope, warden.request)
+              Sessions.safely("warden.remembered_existing.touch") { found.touch_last_seen!(warden.request) }
+            else
+              clear_tracking_key(warden, scope)
+            end
+            return
+          end
+
+          row = found if found&.sessions_token_matches?(token)
         rescue StandardError => e
           Sessions.warn("warden.fetch failed open: #{e.class}: #{e.message}")
           return
         end
 
         if row.nil?
-          # Revoked (the row is gone) or tampered (digest mismatch): the
-          # proven session_limitable sequence — log the scope out and hand
-          # control to the failure app. NOT wrapped in `safely`: the throw
-          # is control flow, not an error.
-          kick!(warden, scope)
+          if explicitly_ended_session?(id)
+            # Explicit remote revocation/expiry is the one intentional place
+            # where the tracking registry is allowed to end a Devise session.
+            # Quiet housekeeping such as same-device supersede writes no
+            # revoked/expired event, so a stale token for such a row fails open.
+            kick!(warden, scope)
+          else
+            clear_tracking_key(warden, scope)
+          end
         elsif Sessions.safely("warden.expired?") { row.sessions_expired? }
           Sessions.safely("warden.expire") { row.revoke!(reason: :expired) }
           kick!(warden, scope)
@@ -427,6 +444,23 @@ module Sessions
 
       def adoption_key_column?(model = Sessions.session_model)
         model.column_names.include?("adoption_key")
+      end
+
+      def clear_tracking_key(warden, scope)
+        warden.session(scope).delete(SESSION_KEY)
+      rescue StandardError
+        nil
+      end
+
+      def explicitly_ended_session?(id)
+        return false if id.blank?
+
+        events = Sessions::Event.where(session_id: id)
+        events.expirations.exists? ||
+          events.revocations.where.not(revoked_reason: "superseded").exists?
+      rescue StandardError => e
+        Sessions.warn("warden.fetch end-event lookup failed open: #{e.class}: #{e.message}")
+        false
       end
 
       # SCOPE-PRECISE teardown: only this scope's warden entries go (the
