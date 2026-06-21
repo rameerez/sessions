@@ -64,6 +64,14 @@ class AddSessionsColumnsTo<%= table_name.camelize %> < ActiveRecord::Migration<%
       # Session.sweep recommendation always needed.
       t.datetime :last_seen_at
       t.string :last_seen_ip, limit: 45 # refreshed with the touch (roaming devices)
+
+      # Lifecycle state. `ended_at: nil` is the live-device set; ended rows
+      # remain as auditable history. Events are the trail, not the source of
+      # truth for whether a session should still be accepted.
+      t.datetime :ended_at
+      t.string :ended_reason
+      t.references :ended_by, polymorphic: true, type: foreign_key_type
+      t.send(json_column_type, :ended_metadata)
     end
 
     add_index :<%= table_name %>, :device_id
@@ -73,9 +81,27 @@ class AddSessionsColumnsTo<%= table_name.camelize %> < ActiveRecord::Migration<%
     add_index :<%= table_name %>, :auth_provider
     add_index :<%= table_name %>, :country_code
     add_index :<%= table_name %>, :last_seen_at
+    add_index :<%= table_name %>, :ended_at
+    add_index :<%= table_name %>, :ended_reason
+    add_index :<%= table_name %>, %i[ended_by_type ended_by_id]
   end
 
   private
+
+  def foreign_key_type
+    config = Rails.configuration.generators
+    reference_column_type(config.options[config.orm][:primary_key_type])
+  end
+
+  # Reference columns hold VALUES of the PK type, so serial pseudo-types map to
+  # their plain integer equivalents.
+  def reference_column_type(setting)
+    case setting
+    when nil, :bigserial then :bigint
+    when :serial then :integer
+    else setting
+    end
+  end
 
   # :jsonb on PostgreSQL, :json elsewhere — same adaptive pattern as the
   # rest of the gem ecosystem (chats, api_keys, …). match? (not equality):

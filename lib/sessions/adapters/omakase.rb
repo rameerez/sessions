@@ -12,17 +12,16 @@ module Sessions
     # through 8.1.3 to main — → docs/research/03-rails-core.md):
     #
     #   1. The Session MODEL gets Sessions::Model included. Its callbacks
-    #      observe 100% of the generated lifecycle: `start_new_session_for`
-    #      uses create!, `terminate_session` uses destroy, and 8.1's
-    #      password reset uses destroy_all (which instantiates and runs
-    #      callbacks) — so logins and revocations are captured with zero
-    #      controller coupling.
+    #      observe `start_new_session_for` (create!) for logins. Normal
+    #      logout is intercepted by ControllerHooks and ends the row in
+    #      place; host-side destroy_all (Rails password reset/account erasure)
+    #      is still tolerated by the model's destroy compatibility hook.
     #
     #   2. ApplicationController gets ControllerHooks PREPENDED — the
     #      prepend sits in front of the included Authentication concern in
     #      the ancestor chain, so `super`-wrapping `resume_session`
     #      (throttled touch + opt-in expiry) and `terminate_session`
-    #      (labeling the destroy as a logout) is clean.
+    #      (labeling the lifecycle end as a logout) is clean.
     #
     #   3. The generated SessionsController#create gets FailedLoginHooks
     #      prepended: `authenticate_by` is deliberately silent on failure
@@ -129,32 +128,77 @@ module Sessions
       module ControllerHooks
         private
 
-        # After the host resolves the session row, enforce opt-in expiry and
-        # apply the throttled last_seen_at touch. Both are error-isolated;
-        # an expired session is destroyed (instant revocation semantics) and
-        # the request proceeds unauthenticated.
+        # After the host resolves the session row, refuse ended lifecycle rows,
+        # enforce opt-in expiry and apply the throttled last_seen_at touch.
+        # In Rails 8 auth this row is the session of record, so an ended row
+        # must be treated as unauthenticated even though it still exists for
+        # audit/history.
         def resume_session
           session = super
           return session unless session.respond_to?(:sessions_expired?)
 
-          if session.sessions_expired?
-            Sessions.safely("omakase.expire") { session.revoke!(reason: :expired) }
+          if session.ended?
+            Sessions.safely("omakase.ended") { sessions_clear_omakase_session_cookie }
             ::Current.session = nil if defined?(::Current) && ::Current.respond_to?(:session=)
             nil
+          elsif session.sessions_expired?
+            # The lifecycle row is the server-side liveness source of truth.
+            # If the end transition rolls back (for example, the audit event
+            # cannot be written), do not clear the Rails auth cookie: that
+            # would log the user out while leaving a stale `.live` row behind.
+            # Source: Warden's session_limitable pattern also kicks only after
+            # a durable server-side state change:
+            # https://github.com/devise-security/devise-security/blob/v0.18.0/lib/devise-security/hooks/session_limitable.rb
+            if sessions_end_omakase_session(session, reason: :expired, context: "omakase.expire")
+              Sessions.safely("omakase.expire.cookie") { sessions_clear_omakase_session_cookie }
+              ::Current.session = nil if defined?(::Current) && ::Current.respond_to?(:session=)
+              nil
+            else
+              session
+            end
           else
             Sessions.safely("omakase.touch") { session.touch_last_seen!(request) }
             session
           end
         end
 
-        # Label the upcoming destroy as a user sign-out so the trail says
-        # "logout", not "revoked".
+        # Rails' generated auth calls `Current.session.destroy` here:
+        # https://github.com/rails/rails/blob/main/railties/lib/rails/generators/rails/authentication/templates/app/controllers/concerns/authentication.rb.tt
+        # v0.2 preserves the row and marks it ended instead, because the row is
+        # now the lifecycle source of truth. We still delete the signed cookie
+        # exactly like the generated method.
         def terminate_session
-          Sessions.safely("omakase.terminate") do
-            session = defined?(::Current) ? ::Current.try(:session) : nil
-            session.revocation_reason = :logout if session.respond_to?(:revocation_reason=)
+          session = defined?(::Current) ? ::Current.try(:session) : nil
+          if session.respond_to?(:end!)
+            sessions_end_omakase_session!(session, reason: :logout, context: "omakase.terminate")
+            ::Current.session = nil if defined?(::Current) && ::Current.respond_to?(:session=)
+            sessions_clear_omakase_session_cookie
+          else
+            super
           end
-          super
+        end
+
+        def sessions_clear_omakase_session_cookie
+          cookies.delete(:session_id)
+        end
+
+        def sessions_end_omakase_session(session, reason:, context:)
+          session.end!(reason: reason)
+          true
+        rescue StandardError => e
+          Sessions.warn("#{context} failed open: #{e.class}: #{e.message}")
+          false
+        end
+
+        def sessions_end_omakase_session!(session, reason:, context:)
+          session.end!(reason: reason)
+          true
+        rescue StandardError => e
+          # Explicit logout must either persist its lifecycle transition or
+          # abort before deleting the cookie. Otherwise the tracking layer
+          # silently changes auth state while the row still says "live".
+          Sessions.warn("#{context} aborted auth teardown: #{e.class}: #{e.message}")
+          raise
         end
       end
 

@@ -2,10 +2,10 @@
 
 module Madmin
   class SessionsController < Madmin::ResourceController
-    # Admin remote logout. `revoke!` destroys the row (the device is kicked
-    # on its next request — the cookie session and, in Devise mode, any
-    # remember-me revival), and writes the immutable `revoked` trail event
-    # with `by:` attribution.
+    # Admin remote logout. `revoke!` ends the row in place (the device is
+    # kicked on its next matching request — the cookie session and, in Devise
+    # mode, any remember-me revival), and writes the immutable `revoked`
+    # trail event with `by:` attribution.
     def revoke
       session_row = <%= session_class %>.find(params[:id])
       device = session_row.device_name

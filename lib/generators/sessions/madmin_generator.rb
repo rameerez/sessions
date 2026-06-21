@@ -28,7 +28,7 @@ module Sessions
 
           This generator produces Madmin resources for the session registry and
           the login trail. For other admin frameworks, build on the same
-          primitives it uses: Session.active / session.revoke! /
+          primitives it uses: Session.live / session.revoke! /
           Sessions::Event scopes (failed_logins, last_24_hours, …).
         MSG
       end
@@ -71,12 +71,12 @@ module Sessions
 
         say "\n  3. (Optional) For a per-user panel (devices + trail on the user's"
         say "     show page), add a member action to your users controller that"
-        say "     loads `user.sessions.by_recency` and `user.session_history.recent`"
+        say "     loads `user.sessions.live.by_recency` and `user.session_history.recent`"
         say "     — the README's Admin section has the full recipe."
 
-        say "\nRevoking from the index destroys the row: that device is signed out"
-        say "on its very next request, and the revocation lands in the trail with"
-        say "admin attribution. 🔐\n", :green
+        say "\nRevoking from the index ends the row in place: that device is signed out"
+        say "on its very next matching request, and the revocation lands in the trail"
+        say "with admin attribution. 🔐\n", :green
       end
 
       private

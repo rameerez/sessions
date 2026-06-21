@@ -55,9 +55,10 @@ module Sessions
 
     # Terminate other sessions when the user's password changes (ASVS 3.3.3
     # / 7.4.3; Laravel's logoutOtherDevices and Phoenix's token nuke are the
-    # cross-framework precedent; Rails 8.1's own password reset already
-    # destroy_alls). Wired by `has_sessions` via an after_update on the
-    # password digest column, so it works on both auth stacks.
+    # cross-framework precedent; Rails 8.1's generated password reset uses
+    # `destroy_all`, which our direct-delete compatibility hook still labels
+    # honestly). Wired by `has_sessions` via an after_update on the password
+    # digest column, so it works on both auth stacks.
     attr_accessor :revoke_on_password_change
 
     # Devise mode only: revoking a session also rotates the user's

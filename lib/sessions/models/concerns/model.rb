@@ -8,10 +8,12 @@ module Sessions
   # explicitly. Either way, ALL gem logic lives here, so the host's model
   # file never goes stale.
   #
-  # One mental model: **rows = active sessions; events = history.** A row is
-  # destroyed on logout/revocation/expiry (instant remote revocation — the
-  # same omakase semantics as Rails 8.1's own password-reset destroy_all),
-  # and its tombstone lives in the `sessions_events` trail.
+  # One mental model: **rows = session lifecycle state; events = audit
+  # history.** `ended_at: nil` means the device is live. Ending a row is an
+  # explicit state transition (`ended_reason`) and never relies on deleting a
+  # row plus later interpreting the absence. That distinction matters in
+  # Devise/Warden mode, where the gem decorates the host session and must
+  # never kick a user unless a durable explicit ending says so.
   #
   # The three lifecycle callbacks observe 100% of both adapters' flows:
   #
@@ -20,7 +22,8 @@ module Sessions
   #                          method, geolocate (when free).
   #   after_create_commit  — write the `login` event, detect new devices,
   #                          enforce the per-user cap, enqueue async geo.
-  #   after_destroy_commit — write the `logout`/`revoked`/`expired` event.
+  #   after_destroy_commit — best-effort compatibility for host-side deletes
+  #                          (account erasure, Rails generator destroy_all).
   #
   # Every callback body is error-isolated: a parsing/geo/event failure may
   # lose a log row; it may NEVER break a sign-in.
@@ -50,9 +53,9 @@ module Sessions
         end
       end
 
-      # Transient revocation context: set by `revoke!` (and the adapters'
-      # logout labeling) before the row is destroyed, read by the
-      # after_destroy_commit event writer.
+      # Transient direct-delete context: legacy/host destroy paths can still
+      # label their compatibility event. Normal gem APIs call `end!` and keep
+      # the row as durable lifecycle state.
       attr_accessor :revocation_reason, :revoked_by
 
       # Set on adopted rows (sessions that predate the gem) so adoption
@@ -61,24 +64,30 @@ module Sessions
 
       before_create :sessions_enrich
       after_create_commit :sessions_record_login
-      after_destroy_commit :sessions_record_end
+      after_destroy_commit :sessions_record_destroyed_end
 
       scope :by_recency, lambda {
         # COALESCE keeps never-touched sessions ordered by creation time,
         # portably across sqlite/postgres/mysql.
         order(Arel.sql("COALESCE(#{table_name}.last_seen_at, #{table_name}.created_at) DESC"))
       }
+      scope :live, lambda {
+        column_names.include?("ended_at") ? where(ended_at: nil) : all
+      }
+      scope :ended, lambda {
+        column_names.include?("ended_at") ? where.not(ended_at: nil) : none
+      }
       scope :active, lambda {
-        where("COALESCE(#{table_name}.last_seen_at, #{table_name}.created_at) >= ?", INACTIVE_AFTER.ago)
+        live.where("COALESCE(#{table_name}.last_seen_at, #{table_name}.created_at) >= ?", INACTIVE_AFTER.ago)
       }
       scope :inactive, lambda {
-        where("COALESCE(#{table_name}.last_seen_at, #{table_name}.created_at) < ?", INACTIVE_AFTER.ago)
+        live.where("COALESCE(#{table_name}.last_seen_at, #{table_name}.created_at) < ?", INACTIVE_AFTER.ago)
       }
     end
 
     class_methods do
       # The user-facing trail rows linked to this registry (`session_id` is
-      # a plain column, no FK — history must survive row destruction).
+      # a plain column, no FK — history must survive lifecycle-row cleanup).
       def sessions_events_for(session_id)
         Sessions::Event.where(session_id: session_id)
       end
@@ -137,15 +146,35 @@ module Sessions
 
     # --- Revocation -----------------------------------------------------------
 
-    # Destroy this session — remote logout, effective on that device's very
-    # next request (both adapters validate liveness per request). Writes a
-    # `revoked` (or `expired`) event with the reason and actor, rotates the
-    # user's remember-me credentials in Devise mode (config.revoke_remember_me),
-    # and fires the on_session_revoked hook.
+    # End this registry row without deleting it. This is the core v0.2
+    # invariant: the row itself is the durable liveness state, and
+    # `sessions_events` remains a read-only audit trail.
+    def end!(reason:, by: nil, at: Time.current, metadata: nil, notify: true)
+      reason = Sessions::EndReason.normalize(reason)
+      event = nil
+      ended_now = false
+
+      with_lock do
+        unless ended?
+          sessions_assign_end_state(reason: reason, by: by, at: at, metadata: metadata)
+          save!
+          ended_now = true
+          event = sessions_record_end_event!(reason: reason, by: by, notify: false)
+        end
+      end
+
+      Sessions.notify_event(event) if notify && event
+      @sessions_ended_now = ended_now
+      self
+    end
+
+    # End this session as an explicit revocation/expiry action. In Devise mode
+    # the next request still proves possession of the per-row token before the
+    # adapter kicks; in Rails-8 auth mode the row id in the signed cookie now
+    # resolves to an ended row and the controller hook refuses it.
     def revoke!(reason: :user_revoked, by: nil)
-      self.revocation_reason = reason
-      self.revoked_by = by
-      destroy!
+      end!(reason: reason, by: by)
+      return self unless @sessions_ended_now
 
       Sessions.safely("revoke_remember_me") { sessions_forget_remember_me! } if Sessions.config.revoke_remember_me
       Sessions.safely("on_session_revoked hook") do
@@ -159,12 +188,26 @@ module Sessions
 
     # Opt-in expiry — false unless the host configured timeouts.
     def sessions_expired?(now = Time.current)
+      return false if ended?
+
       config = Sessions.config
       activity = last_active_at
       return true if config.idle_timeout && activity && activity < now - config.idle_timeout
       return true if config.max_session_lifetime && created_at && created_at < now - config.max_session_lifetime
 
       false
+    end
+
+    def live?
+      !sessions_column?("ended_at") || try(:ended_at).blank?
+    end
+
+    def ended?
+      !live?
+    end
+
+    def sessions_kicks_on_resume?
+      ended? && Sessions::EndReason.kicks_on_resume?(try(:ended_reason))
     end
 
     # The throttled last-seen touch: at most one write per
@@ -176,6 +219,7 @@ module Sessions
       every = Sessions.config.touch_every
       return false unless every
       return false unless sessions_column?("last_seen_at")
+      return false if ended?
 
       now = Time.current
       threshold = now - every
@@ -331,6 +375,24 @@ module Sessions
       false
     end
 
+    def sessions_assign_end_state(reason:, by:, at:, metadata:)
+      sessions_assign_force(ended_at: at, ended_reason: reason)
+      sessions_assign_force(ended_by_type: by.class.name) if by && sessions_column?("ended_by_type")
+      sessions_assign_force(ended_by_id: by.id) if by.respond_to?(:id) && sessions_column?("ended_by_id")
+
+      payload = metadata.presence || sessions_revoked_by_metadata(by)
+      sessions_assign_force(ended_metadata: payload) if payload && sessions_column?("ended_metadata")
+    end
+
+    def sessions_assign_force(attributes)
+      attributes.each do |column, value|
+        name = column.to_s
+        next unless sessions_column?(name)
+
+        self[name] = value
+      end
+    end
+
     # --- after_create_commit: the login event ------------------------------------
 
     def sessions_record_login
@@ -361,8 +423,8 @@ module Sessions
             auth_provider: try(:auth_provider),
             auth_detail: try(:auth_detail).presence,
             # The browser-continuity id rides the trail too: it's what lets
-            # Sessions.last_login answer "how did this browser last sign
-            # in" AFTER logout destroys the row (the "Last used" badge).
+            # Sessions.last_login answer "how did this browser last sign in"
+            # after logout ends the row (the "Last used" badge).
             device_id: try(:device_id).presence,
             metadata: new_device ? { "new_device" => true } : nil
           )
@@ -399,17 +461,16 @@ module Sessions
     end
 
     # The dedup half of browser continuity: prior live rows for the SAME
-    # user on the SAME browser install are superseded by this login. A
-    # quiet destroy on purpose — no on_session_revoked hook, no
-    # remember-me rotation, no trail event (this is housekeeping, not a
-    # security event). Scoped to the user: a shared computer with two
-    # accounts keeps both rows.
+    # user on the SAME browser install are superseded by this login. This is
+    # a quiet lifecycle end on purpose — no on_session_revoked hook, no
+    # remember-me rotation, no trail event (housekeeping, not a security
+    # event). Scoped to the user: a shared computer with two accounts keeps
+    # both rows.
     def sessions_supersede_previous_rows!
       return if try(:device_id).blank?
 
-      self.class.where(user: user, device_id: device_id).where.not(id: id).each do |row|
-        row.revocation_reason = :superseded
-        row.destroy
+      self.class.live.where(user: user, device_id: device_id).where.not(id: id).each do |row|
+        row.end!(reason: :superseded, notify: false)
       end
     end
 
@@ -420,7 +481,7 @@ module Sessions
       cap = Sessions.config.max_sessions_per_user
       return unless cap
 
-      siblings = self.class.where(user: user)
+      siblings = self.class.live.where(user: user)
       overflow = siblings.count - cap
       return unless overflow.positive?
 
@@ -429,46 +490,50 @@ module Sessions
       end
     end
 
-    # --- after_destroy_commit: the end-of-session event ---------------------------
+    # --- after_destroy_commit: legacy/direct-delete compatibility -----------------
 
-    def sessions_record_end
+    def sessions_record_destroyed_end
+      return if ended?
+
       Sessions.safely("record_end") do
-        # Account deletion: dependent-destroyed rows of a destroyed owner
-        # write no events (their trail is erased with them — GDPR default).
-        next if user.nil? || user.destroyed?
-
-        reason = revocation_reason&.to_sym
-        next if reason == :superseded
-
-        event_name = case reason
-                     when :logout then "logout"
-                     when :expired then "expired"
-                     else "revoked"
-                     end
-
-        Sessions::Event.record!(
-          sessions_event_identity_attributes.merge(
-            event: event_name,
-            revoked_reason: (event_name == "revoked" ? (reason || :unknown) : nil),
-            metadata: sessions_revoked_by_metadata
-          )
-        )
+        # Account deletion: dependent-destroyed rows of a destroyed owner write
+        # no events (their trail is erased with them — GDPR default). Direct
+        # host deletes are otherwise treated as legacy explicit ends; v0.2's
+        # public APIs call `end!`/`revoke!` and preserve the row.
+        sessions_record_end_event!(reason: revocation_reason || :unknown, by: revoked_by)
       end
     end
 
-    def sessions_revoked_by_metadata
-      return nil unless revoked_by
+    def sessions_record_end_event!(reason: nil, by: nil, notify: true)
+      return if user.nil? || user.destroyed?
 
-      label = if revoked_by.respond_to?(:id) && revoked_by.class.respond_to?(:name)
-                "#{revoked_by.class.name}##{revoked_by.id}"
+      reason = Sessions::EndReason.normalize(reason || revocation_reason)
+      event_name = Sessions::EndReason.event_for(reason)
+      return unless event_name
+
+      Sessions::Event.record_strict!(
+        sessions_event_identity_attributes.merge(
+          event: event_name,
+          revoked_reason: Sessions::EndReason.revoked_reason_for(reason),
+          metadata: sessions_revoked_by_metadata(by || revoked_by)
+        ),
+        notify: notify
+      )
+    end
+
+    def sessions_revoked_by_metadata(actor = revoked_by)
+      return nil unless actor
+
+      label = if actor.respond_to?(:id) && actor.class.respond_to?(:name)
+                "#{actor.class.name}##{actor.id}"
               else
-                revoked_by.to_s
+                actor.to_s
               end
       { "revoked_by" => label }
     end
 
     # The row's identity, copied onto every event it produces — the trail
-    # must describe the device even after the row is gone.
+    # must describe the device even after the row is ended or later erased.
     def sessions_event_identity_attributes
       {
         session_id: id,

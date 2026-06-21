@@ -141,9 +141,9 @@ module Sessions
     def sessions_owner_sessions
       user = sessions_current_user
       if user.respond_to?(:sessions)
-        user.sessions
+        user.sessions.live
       else
-        Sessions.session_model.where(user: user)
+        Sessions.session_model.live.where(user: user)
       end
     end
 

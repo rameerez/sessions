@@ -6,7 +6,7 @@ require "test_helper"
 # authentication` code — the zero-app-edits story, end to end.
 class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
   setup do
-    @user = User.create!(email_address: "javi@example.com", password: "s3kr1t-pass")
+    @user = User.create!(email_address: "user@example.test", password: "s3kr1t-pass")
   end
 
   teardown do
@@ -60,18 +60,34 @@ class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "signing out destroys the row and records a logout (not a revocation)" do
+  test "signing out ends the row and records a logout (not a revocation)" do
     sign_in_as @user
+    row = @user.sessions.sole
 
     delete "/session"
     assert_response :see_other
 
-    assert_equal 0, @user.sessions.count
+    assert_equal 0, @user.sessions.live.count
+    assert_equal "logout", row.reload.ended_reason
     assert_equal 1, Sessions::Event.logouts.count
     assert_equal 0, Sessions::Event.revocations.count
 
     get "/"
     assert_redirected_to "/session/new" # the cookie is now worthless
+  end
+
+  test "signing out aborts before clearing auth if the lifecycle event cannot be written" do
+    sign_in_as @user
+    row = @user.sessions.sole
+    Sessions::Event.stubs(:record_strict!).raises(ActiveRecord::StatementInvalid, "events table down")
+
+    delete "/session"
+
+    assert_response :internal_server_error
+    assert row.reload.live?,
+           "logout must not clear the cookie while the lifecycle row still says live"
+    get "/"
+    assert_response :success
   end
 
   test "remote revocation logs the device out on its very next request" do
@@ -87,12 +103,12 @@ class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
   end
 
   test "a wrong password records a failed_login with the typed identity" do
-    post "/session", params: { email_address: "JAVI@example.com", password: "wrong" },
+    post "/session", params: { email_address: "USER@example.test", password: "wrong" },
                      headers: { "HTTP_USER_AGENT" => UserAgents::FIREFOX_WINDOWS }
     assert_redirected_to "/session/new"
 
     event = Sessions::Event.failed_logins.sole
-    assert_equal "javi@example.com", event.identity # normalized
+    assert_equal "user@example.test", event.identity # normalized
     assert_equal "invalid_credentials", event.failure_reason
     assert_equal "Firefox", event.browser_name
     assert_nil event.authenticatable # never guess whether the account exists
@@ -110,7 +126,7 @@ class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
   test "config.track_failed_logins = false silences the failure trail" do
     Sessions.config.track_failed_logins = false
 
-    post "/session", params: { email_address: "javi@example.com", password: "wrong" }
+    post "/session", params: { email_address: "user@example.test", password: "wrong" }
 
     assert_equal 0, Sessions::Event.failed_logins.count
   end
@@ -129,8 +145,24 @@ class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
     get "/"
 
     assert_redirected_to "/session/new"
-    assert_equal 0, @user.sessions.count
+    assert_equal 0, @user.sessions.live.count
+    assert_equal "expired", @user.sessions.ended.sole.ended_reason
     assert_equal 1, Sessions::Event.expirations.count
+  end
+
+  test "idle expiry fails open if the lifecycle event cannot be written" do
+    sign_in_as @user
+    Sessions.config.idle_timeout = 1.hour
+    row = @user.sessions.sole
+    row.update_columns(created_at: 2.hours.ago)
+    Sessions::Event.stubs(:record_strict!).raises(ActiveRecord::StatementInvalid, "events table down")
+
+    get "/"
+
+    assert_response :success
+    assert row.reload.live?,
+           "expiry must not clear the cookie while the lifecycle row still says live"
+    assert_equal 0, Sessions::Event.expirations.count
   end
 
   test "without opt-in timeouts, ancient sessions keep working (never silently change lifetimes)" do
@@ -148,9 +180,9 @@ class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
 
     @user.update!(password: "n3w-s3cret-pass")
 
-    assert_equal 0, @user.sessions.count # anonymous-context change nukes everything
+    assert_equal 0, @user.sessions.live.count # anonymous-context change ends everything
     assert Sessions::Event.revocations.where(revoked_reason: "password_change").count >= 2
-    assert_nil Session.find_by(id: other_device.id)
+    assert_equal "password_change", other_device.reload.ended_reason
   end
 
   test "the sign_in_as-style bare row (nil ip/UA) flows through the whole stack" do
@@ -165,7 +197,7 @@ class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
     skip "rate_limit notification ships in Rails 8.1" unless Rails.gem_version >= Gem::Version.new("8.1")
 
     11.times do
-      post "/session", params: { email_address: "javi@example.com", password: "wrong" }
+      post "/session", params: { email_address: "user@example.test", password: "wrong" }
     end
 
     assert_operator Sessions::Event.failed_logins.where(failure_reason: "rate_limited").count, :>=, 1

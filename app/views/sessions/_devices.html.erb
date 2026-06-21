@@ -7,7 +7,7 @@
 <%
   current_session = local_assigns[:current_session] || Sessions.current(request)
   sessions = local_assigns[:sessions] ||
-             local_assigns[:user]&.sessions&.by_recency&.to_a ||
+             local_assigns[:user]&.sessions&.live&.by_recency&.to_a ||
              []
   routes = sessions_engine_routes if respond_to?(:sessions_engine_routes)
 %>

@@ -12,7 +12,7 @@ class TwoFactorFlowsTest < ActionDispatch::IntegrationTest
   setup do
     # The dummy's SessionsController challenges users flagged by the "2fa-"
     # email prefix (its stand-in for an otp_secret column).
-    @user = User.create!(email_address: "2fa-javi@example.com", password: "s3kr1t-pass")
+    @user = User.create!(email_address: "2fa-user@example.test", password: "s3kr1t-pass")
   end
 
   teardown do
@@ -55,7 +55,7 @@ class TwoFactorFlowsTest < ActionDispatch::IntegrationTest
   end
 
   test "a post-login step-up stamps the live session via second_factor!" do
-    plain = User.create!(email_address: "javi@example.com", password: "s3kr1t-pass")
+    plain = User.create!(email_address: "user@example.test", password: "s3kr1t-pass")
     post "/session", params: { email_address: plain.email_address, password: "s3kr1t-pass" }
     row = plain.sessions.sole
     refute row.second_factor?
@@ -67,7 +67,7 @@ class TwoFactorFlowsTest < ActionDispatch::IntegrationTest
   end
 
   test "a failed step-up changes nothing" do
-    plain = User.create!(email_address: "javi@example.com", password: "s3kr1t-pass")
+    plain = User.create!(email_address: "user@example.test", password: "s3kr1t-pass")
     post "/session", params: { email_address: plain.email_address, password: "s3kr1t-pass" }
 
     post "/step_up", params: { code: "999999" }
