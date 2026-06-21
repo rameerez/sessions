@@ -76,6 +76,20 @@ class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
     assert_redirected_to "/session/new" # the cookie is now worthless
   end
 
+  test "signing out aborts before clearing auth if the lifecycle event cannot be written" do
+    sign_in_as @user
+    row = @user.sessions.sole
+    Sessions::Event.stubs(:record_strict!).raises(ActiveRecord::StatementInvalid, "events table down")
+
+    delete "/session"
+
+    assert_response :internal_server_error
+    assert row.reload.live?,
+           "logout must not clear the cookie while the lifecycle row still says live"
+    get "/"
+    assert_response :success
+  end
+
   test "remote revocation logs the device out on its very next request" do
     sign_in_as @user
     get "/"
@@ -134,6 +148,21 @@ class OmakaseIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal 0, @user.sessions.live.count
     assert_equal "expired", @user.sessions.ended.sole.ended_reason
     assert_equal 1, Sessions::Event.expirations.count
+  end
+
+  test "idle expiry fails open if the lifecycle event cannot be written" do
+    sign_in_as @user
+    Sessions.config.idle_timeout = 1.hour
+    row = @user.sessions.sole
+    row.update_columns(created_at: 2.hours.ago)
+    Sessions::Event.stubs(:record_strict!).raises(ActiveRecord::StatementInvalid, "events table down")
+
+    get "/"
+
+    assert_response :success
+    assert row.reload.live?,
+           "expiry must not clear the cookie while the lifecycle row still says live"
+    assert_equal 0, Sessions::Event.expirations.count
   end
 
   test "without opt-in timeouts, ancient sessions keep working (never silently change lifetimes)" do

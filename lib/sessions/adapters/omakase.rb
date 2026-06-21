@@ -142,10 +142,20 @@ module Sessions
             ::Current.session = nil if defined?(::Current) && ::Current.respond_to?(:session=)
             nil
           elsif session.sessions_expired?
-            Sessions.safely("omakase.expire") { session.end!(reason: :expired) }
-            Sessions.safely("omakase.expire.cookie") { sessions_clear_omakase_session_cookie }
-            ::Current.session = nil if defined?(::Current) && ::Current.respond_to?(:session=)
-            nil
+            # The lifecycle row is the server-side liveness source of truth.
+            # If the end transition rolls back (for example, the audit event
+            # cannot be written), do not clear the Rails auth cookie: that
+            # would log the user out while leaving a stale `.live` row behind.
+            # Source: Warden's session_limitable pattern also kicks only after
+            # a durable server-side state change:
+            # https://github.com/devise-security/devise-security/blob/v0.18.0/lib/devise-security/hooks/session_limitable.rb
+            if sessions_end_omakase_session(session, reason: :expired, context: "omakase.expire")
+              Sessions.safely("omakase.expire.cookie") { sessions_clear_omakase_session_cookie }
+              ::Current.session = nil if defined?(::Current) && ::Current.respond_to?(:session=)
+              nil
+            else
+              session
+            end
           else
             Sessions.safely("omakase.touch") { session.touch_last_seen!(request) }
             session
@@ -160,7 +170,7 @@ module Sessions
         def terminate_session
           session = defined?(::Current) ? ::Current.try(:session) : nil
           if session.respond_to?(:end!)
-            Sessions.safely("omakase.terminate") { session.end!(reason: :logout) }
+            sessions_end_omakase_session!(session, reason: :logout, context: "omakase.terminate")
             ::Current.session = nil if defined?(::Current) && ::Current.respond_to?(:session=)
             sessions_clear_omakase_session_cookie
           else
@@ -170,6 +180,25 @@ module Sessions
 
         def sessions_clear_omakase_session_cookie
           cookies.delete(:session_id)
+        end
+
+        def sessions_end_omakase_session(session, reason:, context:)
+          session.end!(reason: reason)
+          true
+        rescue StandardError => e
+          Sessions.warn("#{context} failed open: #{e.class}: #{e.message}")
+          false
+        end
+
+        def sessions_end_omakase_session!(session, reason:, context:)
+          session.end!(reason: reason)
+          true
+        rescue StandardError => e
+          # Explicit logout must either persist its lifecycle transition or
+          # abort before deleting the cookie. Otherwise the tracking layer
+          # silently changes auth state while the row still says "live".
+          Sessions.warn("#{context} aborted auth teardown: #{e.class}: #{e.message}")
+          raise
         end
       end
 

@@ -587,6 +587,23 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal 1, Sessions::Event.expirations.count
   end
 
+  test "opt-in idle expiry fails open if the lifecycle event cannot be written" do
+    user = create_user
+    login!(user)
+    Sessions.config.idle_timeout = 1.hour
+    row = user.sessions.sole
+    row.update_columns(created_at: 2.hours.ago)
+    Sessions::Event.stubs(:record_strict!).raises(ActiveRecord::StatementInvalid, "events table down")
+
+    get "/me"
+
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, "me: #{user.email_address}"
+    assert row.reload.live?,
+           "expiry must not kick Warden while the lifecycle row still says live"
+    assert_equal 0, Sessions::Event.expirations.count
+  end
+
   test "sessions that predate the gem are ADOPTED, never kicked" do
     user = create_user
     # A pre-gem login: authenticated rack session with no sessions token.
@@ -750,6 +767,21 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal "logout", row.reload.ended_reason
     assert_equal 1, Sessions::Event.logouts.count
     assert_equal 0, Sessions::Event.revocations.count
+  end
+
+  test "logout aborts before clearing Warden auth if the lifecycle event cannot be written" do
+    user = create_user
+    login!(user)
+    row = user.sessions.sole
+    Sessions::Event.stubs(:record_strict!).raises(ActiveRecord::StatementInvalid, "events table down")
+
+    assert_raises(ActiveRecord::StatementInvalid) { delete "/logout" }
+
+    assert row.reload.live?,
+           "logout must not clear Warden auth while the lifecycle row still says live"
+    get "/me"
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, "me: #{user.email_address}"
   end
 
   # --- Multi-scope ------------------------------------------------------------------------

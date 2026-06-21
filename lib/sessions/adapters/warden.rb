@@ -240,8 +240,11 @@ module Sessions
             clear_tracking_key(warden, scope)
           end
         elsif Sessions.safely("warden.expired?") { row.sessions_expired? }
-          Sessions.safely("warden.expire") { row.end!(reason: :expired) }
-          kick!(warden, scope)
+          # Expiry is gem-initiated, so it must be durable before we touch
+          # Warden auth state. If the lifecycle write rolls back, fail open:
+          # the user stays authenticated and the next request can retry the
+          # expiry instead of leaving an orphan `.live` row.
+          kick!(warden, scope) if end_row_for_auth_teardown(row, reason: :expired, context: "warden.expire")
         else
           Sessions.safely("warden.touch") { row.touch_last_seen!(warden.request) }
         end
@@ -589,22 +592,28 @@ module Sessions
       # activatable on unconfirmed/locked accounts, timeoutable) that loops:
       # activatable → logout → us → re-auth → activatable → … SystemStackError.
       def record_logout(record, warden, opts)
-        Sessions.safely("warden.logout") do
-          scope = opts[:scope]
-          tracking = parse_tracking_state(warden.raw_session["warden.user.#{scope}.session"]&.dig(SESSION_KEY))
-          next unless tracking
+        scope = opts[:scope]
+        tracking = parse_tracking_state(warden.raw_session["warden.user.#{scope}.session"]&.dig(SESSION_KEY))
+        return unless tracking
 
-          row = Sessions.session_model.find_by(id: tracking[:id])
-          next unless row
-          next unless row.live?
+        row = Sessions.session_model.find_by(id: tracking[:id])
+        return unless row
+        return unless row.live?
 
-          token_backed = tracking[:mode] == "credential" && row.sessions_token_matches?(tracking[:token])
-          tokenless_known_device = tracking[:mode] == "hint" &&
-                                   existing_row_session?(row, record, scope, warden.request)
-          next unless token_backed || tokenless_known_device
+        token_backed = tracking[:mode] == "credential" && row.sessions_token_matches?(tracking[:token])
+        tokenless_known_device = tracking[:mode] == "hint" &&
+                                 existing_row_session?(row, record, scope, warden.request)
+        return unless token_backed || tokenless_known_device
 
-          row.end!(reason: :logout)
-        end
+        # Warden 1.2.9 runs before_logout callbacks before deleting the
+        # serialized session keys (proxy.rb#logout). Raising here aborts the
+        # auth teardown, so an audit/lifecycle persistence failure cannot log
+        # the user out while leaving the row live.
+        # Source: https://github.com/wardencommunity/warden/blob/v1.2.9/lib/warden/proxy.rb#L266-L279
+        row.end!(reason: :logout)
+      rescue StandardError => e
+        Sessions.warn("warden.logout aborted auth teardown: #{e.class}: #{e.message}")
+        raise
       end
 
       def warden_default_scope(env)
@@ -625,6 +634,14 @@ module Sessions
 
         record.is_a?(reflection.klass)
       rescue StandardError
+        false
+      end
+
+      def end_row_for_auth_teardown(row, reason:, context:)
+        row.end!(reason: reason)
+        true
+      rescue StandardError => e
+        Sessions.warn("#{context} failed open: #{e.class}: #{e.message}")
         false
       end
     end

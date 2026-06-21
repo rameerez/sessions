@@ -427,10 +427,10 @@ end
 
 ## 🧱 Why the models?
 
-Two primitives, linked — **rows are active sessions; events are history**:
+Two primitives, linked — **rows are lifecycle state; events are history**:
 
-- **`sessions`** (the registry — *your* table, Rails-8-shaped on both stacks): one row = one signed-in device. Destroyed on logout/revocation/expiry, which is what makes revocation instant — both adapters resolve the row on every request, so a missing row *is* a remote logout. No soft-delete state machine.
-- **`sessions_events`** (the trail — gem-owned, append-only): what happened and from where, surviving the rows it describes. Its `session_id` is a plain column with no foreign key *on purpose*: history must outlive the registry.
+- **`sessions`** (the registry — *your* table, Rails-8-shaped on both stacks): one row = one signed-in device lifecycle. `ended_at: nil` means live; logout, revocation, expiry, pruning, and supersede mark the row ended in place with `ended_reason`. Adapters only disconnect a device after the explicit lifecycle state says they should, so a tracking failure cannot silently delete auth state.
+- **`sessions_events`** (the trail — gem-owned, append-only): what happened and from where. Events describe the lifecycle transition; the row itself remains the liveness source of truth. Its `session_id` is a plain column with no foreign key *on purpose*: history and retention must survive row purges, account erasure, and older host tables.
 
 On Rails 8 auth, the gem **adopts** the generated table and model: one migration adds columns (the `add_devise_to_users` precedent), and the 2-line `Session` model is decorated via a concern at boot — your generated code stays byte-identical. On Devise, the install generator creates the same Rails-8-shaped table and a 3-line shell model — so if you ever migrate Devise → Rails auth, your sessions table is already exactly where Rails expects it.
 
