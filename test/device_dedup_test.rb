@@ -9,7 +9,7 @@ require "test_helper"
 # separate devices, and other USERS on the same browser are never touched.
 class DeviceDedupTest < ActionDispatch::IntegrationTest
   setup do
-    @user = User.create!(email_address: "javi@example.com", password: "s3kr1t-pass")
+    @user = User.create!(email_address: "user@example.test", password: "s3kr1t-pass")
   end
 
   teardown do
@@ -24,12 +24,12 @@ class DeviceDedupTest < ActionDispatch::IntegrationTest
     first_row = @user.sessions.sole
     assert first_row.device_id.present?, "login mints the continuity id"
 
-    delete "/session" # row destroyed on logout…
+    delete "/session" # row ended on logout…
     sign_in_as @user  # …and a fresh zombie-less login reuses nothing weird
 
     sign_in_as @user # sign in AGAIN without logging out (abandoned session case)
 
-    assert_equal 1, @user.sessions.count, "same browser must not stack duplicate devices"
+    assert_equal 1, @user.sessions.live.count, "same browser must not stack duplicate live devices"
   end
 
   test "an abandoned session (browser quit, cookie gone) is superseded on re-login" do
@@ -41,8 +41,8 @@ class DeviceDedupTest < ActionDispatch::IntegrationTest
     # logging in again — the old row is still live server-side.
     sign_in_as @user
 
-    refute Session.exists?(zombie.id), "the zombie row was superseded"
-    assert_equal 1, @user.sessions.count
+    assert_equal "superseded", zombie.reload.ended_reason
+    assert_equal 1, @user.sessions.live.count
     assert_equal 0, Sessions::Event.revocations.where(revoked_reason: "superseded").count,
                  "superseded rows are internal dedup bookkeeping, not security events"
   end
@@ -51,8 +51,8 @@ class DeviceDedupTest < ActionDispatch::IntegrationTest
     sign_in_as @user, ua: UserAgents::FIREFOX_WINDOWS
     sign_in_as @user, ua: UserAgents::FIREFOX_WINDOWS.gsub("139.0", "151.0")
 
-    assert_equal 1, @user.sessions.count
-    assert_equal "151", @user.sessions.sole.browser_version
+    assert_equal 1, @user.sessions.live.count
+    assert_equal "151", @user.sessions.live.sole.browser_version
   end
 
   test "a different browser (no continuity cookie) is a separate device" do

@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-# The Rails-8-shaped sessions table for a Devise app: one row = one
-# signed-in device, destroyed on logout/revocation (rows = active sessions;
-# history lives in sessions_events). Deliberately the SAME base shape
+# The Rails-8-shaped sessions table for a Devise app: one row = one signed-in
+# device lifecycle (`ended_at: nil` means live; history lives in
+# sessions_events). Deliberately the SAME base shape
 # `rails generate authentication` creates — so if you ever migrate from
 # Devise to Rails auth, your sessions table is already waiting.
 class Create<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_version %>
@@ -23,8 +23,8 @@ class Create<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_ve
 
       # Devise/Warden mode: SHA-256 of a random token whose raw value lives
       # ONLY in the user's own session (OWASP: never persist raw session
-      # identifiers). The Warden adapter validates it on every request —
-      # destroy the row and that device is signed out on its next request.
+      # identifiers). The Warden adapter validates it on every request; only
+      # a matching token plus explicit lifecycle end may sign that device out.
       t.string :token_digest
 
       # The Warden scope ("user") — multi-scope Devise apps.
@@ -72,6 +72,15 @@ class Create<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_ve
       t.datetime :last_seen_at
       t.string :last_seen_ip, limit: 45
 
+      # Lifecycle state. v0.2 keeps rows as the source of truth instead of
+      # deleting them and asking events to act as tombstones. `ended_at: nil`
+      # is the live-device set; explicit ended_reason values are the only
+      # thing a Devise/Warden request is allowed to enforce.
+      t.datetime :ended_at
+      t.string :ended_reason
+      t.references :ended_by, polymorphic: true, type: foreign_key_type
+      t.send(json_column_type, :ended_metadata)
+
       t.timestamps
     end
 
@@ -82,6 +91,9 @@ class Create<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_ve
     add_index :<%= table_name %>, :auth_provider
     add_index :<%= table_name %>, :country_code
     add_index :<%= table_name %>, :last_seen_at
+    add_index :<%= table_name %>, :ended_at
+    add_index :<%= table_name %>, :ended_reason
+    add_index :<%= table_name %>, %i[ended_by_type ended_by_id]
   end
 
   private

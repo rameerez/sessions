@@ -14,9 +14,9 @@ class CreateSessionsEvents < ActiveRecord::Migration[7.1]
       t.references :authenticatable, polymorphic: true, type: foreign_key_type, index: false
       t.string :scope
 
-      # The trail ↔ registry linkage. A plain column, NO foreign key: the
-      # registry row it points at gets destroyed on revoke; history must
-      # survive.
+      # The trail ↔ registry linkage. A plain column, NO foreign key:
+      # lifecycle rows are normally ended in place, but account-erasure and
+      # legacy host deletes may still remove them.
       t.send(session_id_column_type, :session_id)
 
       t.string :identity

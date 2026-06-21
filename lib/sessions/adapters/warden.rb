@@ -13,18 +13,25 @@ module Sessions
     # to a sessions-table ROW, turning "exactly one session" into "N devices,
     # each individually revocable" (→ docs/research/04-devise-warden.md §5).
     #
-    #   login  — mint a random token, store [row_id, raw_token] in the
+    #   login  — mint a random token, store structured tracking state in the
     #            per-scope warden session (it survives Warden's :renew SID
     #            rotation and is deleted by Warden itself on logout; we
     #            never key on the Rack SID), persist only the SHA-256
     #            digest on the row.
     #   fetch  — per-request liveness check: row exists + digest matches
-    #            (constant-time) → throttled touch; row gone (revoked!) →
-    #            the proven session_limitable kick: clear, logout, throw.
+    #            (constant-time) + row is live → throttled touch; row ended
+    #            for an explicit reason → the proven session_limitable kick:
+    #            clear, logout, throw. Missing/mismatched tracking fails open
+    #            unless a legacy v0.1.x event tombstone proves a pre-lifecycle
+    #            remote revocation.
     #   failure — record the failed attempt with the typed identity.
-    #   logout — destroy the row, labeled as a logout.
+    #   logout — mark the row ended, labeled as a logout.
     module Warden
-      # Key inside `warden.session(scope)` holding [row_id, raw_token].
+      # Key inside `warden.session(scope)` holding the sessions gem tracking
+      # state. v0.2 writes a small Hash (`id`, `token`, `mode`) instead of the
+      # old `[row_id, raw_token]` tuple so a nil token can never accidentally
+      # read like an auth credential. The parser still accepts arrays because
+      # production users may carry v0.1.x cookies during deploy.
       SESSION_KEY = "sessions"
 
       # Rememberable can restore a user on background/native JSON requests
@@ -145,7 +152,7 @@ module Sessions
         row.sessions_skip_supersede = skip_supersede
         Sessions.with_request(request) { row.save! }
 
-        warden.session(scope)[SESSION_KEY] = [row.id, token]
+        warden.session(scope)[SESSION_KEY] = tracking_state(row, token: token, mode: "credential")
         row
       end
 
@@ -168,8 +175,8 @@ module Sessions
         end
         return if data == :skip
 
-        session_token = data && data[:login]
-        if session_token.nil?
+        tracking = parse_tracking_state(data && data[:login])
+        if tracking.nil?
           if data && data[:pending_login]
             activate_pending_login(record, warden, scope, data[:pending_login])
           else
@@ -181,15 +188,17 @@ module Sessions
         # The lookup is NOT wrapped in `safely`: an ERRORED lookup and a
         # MISSING row must be distinguishable from a raised lookup, but a
         # missing/mismatched tracking row is still not automatically auth
-        # state. Only an explicit revoked/expired tombstone event may kick.
+        # state. In v0.2, only a matching row whose own ended_reason is
+        # explicit may kick. The event lookup below is legacy-only for v0.1.x
+        # cookies whose rows were already destroyed before lifecycle columns
+        # existed.
         # A raised lookup — the sessions table unreachable, a timeout, a
         # migration mid-deploy — means the TRACKING layer is down, and
         # tracking must never break authentication: fail OPEN, let the request
         # through untracked, try again next request.
         begin
-          id, token = session_token
-          found = Sessions.session_model.find_by(id: id)
-          if token.blank?
+          found = Sessions.session_model.find_by(id: tracking[:id])
+          if tracking[:mode] == "hint"
             # v0.1.3 intentionally reattached remember-me restores to an
             # existing device row without writing another login event, storing
             # [row_id, nil] in Warden. That is fine as a tracking hint, but it
@@ -197,32 +206,41 @@ module Sessions
             # browser-continuity cookie still agrees; otherwise clear only the
             # gem's tracking key and let Devise/Rails keep owning auth.
             # Source: https://github.com/rameerez/sessions/blob/v0.1.3/CHANGELOG.md
-            if existing_row_session?(found, record, scope, warden.request)
+            if existing_row_session?(found, record, scope, warden.request) && found.live?
               Sessions.safely("warden.remembered_existing.touch") { found.touch_last_seen!(warden.request) }
+            elsif (replacement = live_replacement_for(found, record, scope, warden.request))
+              attach_existing_row(replacement, warden, scope)
             else
               clear_tracking_key(warden, scope)
             end
             return
           end
 
-          row = found if found&.sessions_token_matches?(token)
+          row = found if found&.sessions_token_matches?(tracking[:token])
         rescue StandardError => e
           Sessions.warn("warden.fetch failed open: #{e.class}: #{e.message}")
           return
         end
 
         if row.nil?
-          if explicitly_ended_session?(id)
+          if legacy_explicitly_ended_session?(tracking[:id])
             # Explicit remote revocation/expiry is the one intentional place
-            # where the tracking registry is allowed to end a Devise session.
-            # Quiet housekeeping such as same-device supersede writes no
-            # revoked/expired event, so a stale token for such a row fails open.
+            # where a legacy v0.1.x destroyed row may still end a Devise
+            # session. v0.2 rows should be present and ended in place.
             kick!(warden, scope)
           else
             clear_tracking_key(warden, scope)
           end
+        elsif row.ended?
+          if row.sessions_kicks_on_resume?
+            kick!(warden, scope)
+          elsif (replacement = live_replacement_for(row, record, scope, warden.request))
+            attach_existing_row(replacement, warden, scope)
+          else
+            clear_tracking_key(warden, scope)
+          end
         elsif Sessions.safely("warden.expired?") { row.sessions_expired? }
-          Sessions.safely("warden.expire") { row.revoke!(reason: :expired) }
+          Sessions.safely("warden.expire") { row.end!(reason: :expired) }
           kick!(warden, scope)
         else
           Sessions.safely("warden.touch") { row.touch_last_seen!(warden.request) }
@@ -317,7 +335,7 @@ module Sessions
         device_id = device_id_from_request(warden.request)
         return if device_id.blank?
 
-        rows = Sessions.session_model.where(user: record, device_id: device_id)
+        rows = Sessions.session_model.live.where(user: record, device_id: device_id)
         rows = rows.where(scope: scope.to_s) if Sessions.session_model.column_names.include?("scope")
         rows.order(created_at: :desc).first
       rescue StandardError
@@ -325,7 +343,7 @@ module Sessions
       end
 
       def attach_existing_row(row, warden, scope)
-        warden.session(scope)[SESSION_KEY] = [row.id, nil]
+        warden.session(scope)[SESSION_KEY] = tracking_state(row, mode: "hint")
         Sessions.safely("warden.remembered_existing.touch") { row.touch_last_seen!(warden.request) }
         row
       end
@@ -342,6 +360,19 @@ module Sessions
         true
       rescue StandardError
         false
+      end
+
+      def live_replacement_for(row, record, scope, request)
+        device_id = row&.try(:device_id).presence || device_id_from_request(request)
+        return if device_id.blank?
+
+        model = Sessions.session_model
+        rows = model.live.where(user: record, device_id: device_id)
+        rows = rows.where(scope: scope.to_s) if model.column_names.include?("scope")
+        rows = rows.where.not(id: row.id) if row
+        rows.order(created_at: :desc).first
+      rescue StandardError
+        nil
       end
 
       def device_id_from_request(request)
@@ -403,10 +434,10 @@ module Sessions
 
       def adopted_row(record, scope, adoption_key:)
         model = Sessions.session_model
-        rows = model.where(user: record)
+        rows = model.live.where(user: record)
         rows = rows.where(scope: scope.to_s) if model.column_names.include?("scope")
 
-        row = model.find_by(adoption_key: adoption_key) if adoption_key_column?(model) && adoption_key.present?
+        row = model.live.find_by(adoption_key: adoption_key) if adoption_key_column?(model) && adoption_key.present?
         row = nil unless adopted_row?(row)
         row ||= rows.order(created_at: :desc).detect { |candidate| adopted_row?(candidate) }
 
@@ -452,14 +483,44 @@ module Sessions
         nil
       end
 
-      def explicitly_ended_session?(id)
+      def tracking_state(row, mode:, token: nil)
+        {
+          "v" => 2,
+          "id" => row.id,
+          "token" => token,
+          "mode" => mode
+        }
+      end
+
+      def parse_tracking_state(value)
+        case value
+        when Hash
+          id = value["id"] || value[:id]
+          token = value["token"] || value[:token]
+          mode = (value["mode"] || value[:mode]).presence
+        when Array
+          id, token = value
+          mode = token.present? ? "credential" : "hint"
+        else
+          return nil
+        end
+
+        return nil if id.blank?
+
+        mode = token.present? ? "credential" : (mode || "hint")
+        { id: id, token: token, mode: mode }
+      rescue StandardError
+        nil
+      end
+
+      def legacy_explicitly_ended_session?(id)
         return false if id.blank?
 
         events = Sessions::Event.where(session_id: id)
         events.expirations.exists? ||
           events.revocations.where.not(revoked_reason: "superseded").exists?
       rescue StandardError => e
-        Sessions.warn("warden.fetch end-event lookup failed open: #{e.class}: #{e.message}")
+        Sessions.warn("warden.fetch legacy end-event lookup failed open: #{e.class}: #{e.message}")
         false
       end
 
@@ -468,8 +529,8 @@ module Sessions
       # the same rack session, and unrelated host session data (carts,
       # locale, return-to paths), survive a user-scope kick. Deleting the
       # keys BEFORE logout matters: our before_logout hook then finds no
-      # token and records nothing (a kick is not a logout — the revocation
-      # event was already written by whoever destroyed the row).
+      # token and records nothing (a kick is not a logout — the lifecycle
+      # reason/event were already written by the explicit ending).
       def kick!(warden, scope)
         warden.raw_session.delete("warden.user.#{scope}.key")
         warden.raw_session.delete("warden.user.#{scope}.session")
@@ -517,9 +578,8 @@ module Sessions
       # --- Hook 4: logout ---------------------------------------------------------
 
       # Fires once per scope (including forced logouts: timeout, lockout,
-      # our own revocation kick). If the row is already gone — revoked from
-      # another device — there's nothing to do; the `revoked` event was
-      # written by whoever destroyed it.
+      # our own revocation kick). If the row is already ended, there's nothing
+      # to do; lifecycle state is idempotent.
       #
       # CRITICAL: read the RAW session here, never `warden.session(scope)`.
       # Warden's logout deletes `@users[scope]` BEFORE running before_logout
@@ -531,19 +591,19 @@ module Sessions
       def record_logout(record, warden, opts)
         Sessions.safely("warden.logout") do
           scope = opts[:scope]
-          data = warden.raw_session["warden.user.#{scope}.session"]&.dig(SESSION_KEY)
-          next unless data
+          tracking = parse_tracking_state(warden.raw_session["warden.user.#{scope}.session"]&.dig(SESSION_KEY))
+          next unless tracking
 
-          id, token = data
-          row = Sessions.session_model.find_by(id: id)
+          row = Sessions.session_model.find_by(id: tracking[:id])
           next unless row
+          next unless row.live?
 
-          token_backed = row.sessions_token_matches?(token)
-          tokenless_known_device = token.blank? && existing_row_session?(row, record, scope, warden.request)
+          token_backed = tracking[:mode] == "credential" && row.sessions_token_matches?(tracking[:token])
+          tokenless_known_device = tracking[:mode] == "hint" &&
+                                   existing_row_session?(row, record, scope, warden.request)
           next unless token_backed || tokenless_known_device
 
-          row.revocation_reason ||= :logout
-          row.destroy
+          row.end!(reason: :logout)
         end
       end
 

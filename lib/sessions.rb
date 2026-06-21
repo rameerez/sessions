@@ -14,6 +14,7 @@ require_relative "sessions/version"
 require_relative "sessions/errors"
 require_relative "sessions/configuration"
 require_relative "sessions/current"
+require_relative "sessions/end_reason"
 require_relative "sessions/ip_address"
 require_relative "sessions/device"
 require_relative "sessions/classifier"
@@ -36,7 +37,7 @@ require_relative "sessions/engine" if defined?(::Rails::Engine)
 #   Sessions.configure { |config| ... }       # one block, in an initializer
 #   has_sessions                              # on your auth model
 #
-#   current_user.sessions.active              # live devices
+#   current_user.sessions.live                # live devices
 #   session.device_name                       # => "Chrome on macOS"
 #   session.revoke!                           # remote logout, effective next request
 #   current_user.revoke_other_sessions!       # GitHub's "sign out everywhere else"
@@ -245,7 +246,7 @@ module Sessions
       }
     end
 
-    # Right-to-erasure helper: destroy every live session, delete the trail,
+    # Right-to-erasure helper: destroy every session row, delete the trail,
     # and null the typed identity on any retained failure rows that match
     # +user+'s email — so honoring a GDPR deletion request is one call.
     def forget(user, identity: nil)
@@ -327,11 +328,11 @@ module Sessions
       request.session.to_hash.each do |key, value|
         next unless key.to_s.match?(pattern) && value.is_a?(Hash)
 
-        id, token = value[Adapters::Warden::SESSION_KEY]
-        next unless id && token
+        tracking = Adapters::Warden.parse_tracking_state(value[Adapters::Warden::SESSION_KEY])
+        next unless tracking && tracking[:mode] == "credential"
 
-        row = session_model.find_by(id: id)
-        return row if row.respond_to?(:sessions_token_matches?) && row&.sessions_token_matches?(token)
+        row = session_model.live.find_by(id: tracking[:id])
+        return row if row.respond_to?(:sessions_token_matches?) && row&.sessions_token_matches?(tracking[:token])
       end
       nil
     rescue StandardError
@@ -342,7 +343,7 @@ module Sessions
       return nil unless request.respond_to?(:cookie_jar)
 
       id = request.cookie_jar.signed[:session_id]
-      session_model.find_by(id: id) if id
+      session_model.live.find_by(id: id) if id
     rescue StandardError
       nil
     end
@@ -374,12 +375,12 @@ module Sessions
         threshold = idle.ago
         # A session's last activity is its throttled touch when present,
         # else its creation.
-        scopes << session_model.where(last_seen_at: ...threshold)
-        scopes << session_model.where(last_seen_at: nil).where(created_at: ...threshold)
+        scopes << session_model.live.where(last_seen_at: ...threshold)
+        scopes << session_model.live.where(last_seen_at: nil).where(created_at: ...threshold)
       end
 
       if (lifetime = config.max_session_lifetime)
-        scopes << session_model.where(created_at: ...lifetime.ago)
+        scopes << session_model.live.where(created_at: ...lifetime.ago)
       end
 
       # NOTE: reduce(:or), never `none.or(...)` — a NullRelation stays null
@@ -398,10 +399,10 @@ module Sessions
       owner_keys = session_model.column_names.include?("user_type") ? %i[user_type user_id] : %i[user_id]
 
       count = 0
-      session_model.group(*owner_keys).count.each do |owner_key, sessions_count|
+      session_model.live.group(*owner_keys).count.each do |owner_key, sessions_count|
         next if sessions_count <= cap
 
-        session_model.where(owner_keys.zip(Array(owner_key)).to_h)
+        session_model.live.where(owner_keys.zip(Array(owner_key)).to_h)
                      .order(created_at: :asc)
                      .limit(sessions_count - cap)
                      .each do |session|

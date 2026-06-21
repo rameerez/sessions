@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-# Live device registry (sessions gem): one row = one signed-in device,
-# destroyed on logout/revocation — so this index IS the set of sessions that
-# can act on your app right now. The append-only history lives in
-# Sessions::Event (see Sessions::EventResource).
+# Device lifecycle registry (sessions gem): one row = one signed-in device.
+# `ended_at: nil` is the live set that can act on your app right now; ended
+# rows stay around as durable state/audit context until retention or account
+# erasure removes them. The append-only history lives in Sessions::Event.
 class SessionResource < Madmin::Resource
   model <%= session_class %>
 
@@ -30,6 +30,8 @@ class SessionResource < Madmin::Resource
   attribute :app_build, index: false, form: false
   attribute :user_agent, index: false, form: false
   attribute :last_seen_at, index: true, form: false, label: "Last seen"
+  attribute :ended_at, index: true, form: false, label: "Ended"
+  attribute :ended_reason, index: true, form: false, label: "Ended because"
   attribute :created_at, index: true, form: false, label: "Signed in"
   attribute :updated_at, show: false, form: false
 
@@ -39,8 +41,14 @@ class SessionResource < Madmin::Resource
   attribute :adoption_key, show: false, form: false
   attribute :auth_detail, show: false, form: false
   attribute :client_hints, show: false, form: false
+  attribute :ended_by_type, show: false, form: false
+  attribute :ended_by_id, show: false, form: false
+  attribute :ended_metadata, show: false, form: false
 
-  # Gem scopes: active = last activity within 30 days.
+  # Gem scopes: live/ended are lifecycle state; active/inactive are UI
+  # grouping within the live set (last activity within 30 days).
+  scope :live
+  scope :ended
   scope :active
   scope :inactive
 
@@ -53,9 +61,9 @@ class SessionResource < Madmin::Resource
   def self.default_sort_column = "created_at"
   def self.default_sort_direction = "desc"
 
-  # Remote logout: destroys the row (the device is signed out on its next
-  # request), writes the `revoked` trail event attributed to the admin, and
-  # rotates the user's remember-me credentials in Devise mode.
+  # Remote logout: ends the row in place, writes the `revoked` trail event
+  # attributed to the admin, and rotates the user's remember-me credentials
+  # in Devise mode. The device is signed out on its next matching request.
   member_action do
     button_to "Revoke session",
       main_app.revoke_madmin_session_path(@record),

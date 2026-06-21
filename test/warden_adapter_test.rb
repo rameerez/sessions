@@ -207,8 +207,9 @@ class WardenAdapterTest < ActiveSupport::TestCase
     user = create_user
     login!(user)
 
-    id, token = last_request.env["rack.session"]["warden.user.user.session"]["sessions"]
-    row = Session.find(id)
+    tracking = Sessions::Adapters::Warden.parse_tracking_state(last_request.env["rack.session"]["warden.user.user.session"]["sessions"])
+    row = Session.find(tracking[:id])
+    token = tracking[:token]
     assert row.sessions_token_matches?(token)
     refute_equal token, row.token_digest
     refute(row.attributes.values.grep(String).any? { |value| value.include?(token) })
@@ -361,8 +362,10 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal "password", event.auth_method
     assert_equal({ "remembered" => true }, event.auth_detail)
 
-    id, token = last_request.env["rack.session"]["warden.user.user.session"]["sessions"]
-    assert_equal row.id, id
+    tracking = Sessions::Adapters::Warden.parse_tracking_state(last_request.env["rack.session"]["warden.user.user.session"]["sessions"])
+    assert_equal row.id, tracking[:id]
+    assert_equal "credential", tracking[:mode]
+    token = tracking[:token]
     assert row.sessions_token_matches?(token), "remembered document restore must install a normal tracking token"
   end
 
@@ -377,8 +380,10 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal({ "remembered" => true }, row.auth_detail)
     assert_equal 1, Sessions::Event.logins.count
 
-    id, token = last_request.env["rack.session"]["warden.user.user.session"]["sessions"]
-    assert_equal row.id, id
+    tracking = Sessions::Adapters::Warden.parse_tracking_state(last_request.env["rack.session"]["warden.user.user.session"]["sessions"])
+    assert_equal row.id, tracking[:id]
+    assert_equal "credential", tracking[:mode]
+    token = tracking[:token]
     assert row.sessions_token_matches?(token), "remembered HTML restore must stay token-backed"
   end
 
@@ -406,13 +411,14 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal existing.id, user.sessions.sole.id
     assert_equal 0, Sessions::Event.count, "remember-me refreshes for a known device are not user-visible events"
 
-    id, token = last_request.env["rack.session"]["warden.user.user.session"]["sessions"]
-    assert_equal existing.id, id
-    assert_nil token, "tokenless tracking hints must never be treated as auth credentials"
+    tracking = Sessions::Adapters::Warden.parse_tracking_state(last_request.env["rack.session"]["warden.user.user.session"]["sessions"])
+    assert_equal existing.id, tracking[:id]
+    assert_equal "hint", tracking[:mode]
+    assert_nil tracking[:token], "tokenless tracking hints must never be treated as auth credentials"
 
     get "/me", {}, html_native_headers
     assert_equal 200, last_response.status
-    assert_equal 1, user.sessions.count
+    assert_equal 1, user.sessions.live.count
   end
 
   test "logout from a tokenless known-device restore still ends the tracked row" do
@@ -433,12 +439,15 @@ class WardenAdapterTest < ActiveSupport::TestCase
     Sessions::Adapters::Warden.stubs(:device_id_from_request).returns("device-1")
     get "/native/entry", {}, remembered_html_headers(user)
     assert_equal existing.id, user.sessions.sole.id
-    assert_nil last_request.env["rack.session"]["warden.user.user.session"]["sessions"].second
+    tracking = Sessions::Adapters::Warden.parse_tracking_state(last_request.env["rack.session"]["warden.user.user.session"]["sessions"])
+    assert_equal "hint", tracking[:mode]
+    assert_nil tracking[:token]
 
     delete "/logout"
 
     assert_equal 200, last_response.status
-    assert_equal 0, user.sessions.count
+    assert_equal 0, user.sessions.live.count
+    assert_equal "logout", existing.reload.ended_reason
     assert_equal 1, Sessions::Event.logouts.count
     assert_equal 0, Sessions::Event.revocations.count
   end
@@ -573,7 +582,8 @@ class WardenAdapterTest < ActiveSupport::TestCase
     get "/me"
 
     assert_equal 401, last_response.status
-    assert_equal 0, user.sessions.count
+    assert_equal 0, user.sessions.live.count
+    assert_equal "expired", user.sessions.ended.sole.ended_reason
     assert_equal 1, Sessions::Event.expirations.count
   end
 
@@ -729,13 +739,15 @@ class WardenAdapterTest < ActiveSupport::TestCase
 
   # --- Hook 4: logout ------------------------------------------------------------------
 
-  test "logout destroys the row and records a logout event" do
+  test "logout ends the row and records a logout event" do
     user = create_user
     login!(user)
+    row = user.sessions.sole
 
     delete "/logout"
 
-    assert_equal 0, user.sessions.count
+    assert_equal 0, user.sessions.live.count
+    assert_equal "logout", row.reload.ended_reason
     assert_equal 1, Sessions::Event.logouts.count
     assert_equal 0, Sessions::Event.revocations.count
   end
@@ -777,7 +789,7 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal 401, last_response.status
     assert_includes last_response.body, "unconfirmed"
     assert_equal 1, Sessions::Event.logouts.count # the forced logout was recorded
-    assert_equal 0, user.sessions.count
+    assert_equal 0, user.sessions.live.count
   ensure
     # The hook arrays are class-level state — drop the throwing hook so it
     # can't leak into other tests.

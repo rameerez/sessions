@@ -8,7 +8,7 @@ require "test_helper"
 # carry the same device id. Device-scoped, not account-scoped.
 class LastLoginTest < ActionDispatch::IntegrationTest
   setup do
-    @user = User.create!(email_address: "javi@example.com", password: "s3kr1t-pass")
+    @user = User.create!(email_address: "user@example.test", password: "s3kr1t-pass")
   end
 
   teardown do
@@ -27,7 +27,7 @@ class LastLoginTest < ActionDispatch::IntegrationTest
 
   test "after sign-in and sign-out, the login page knows the last method" do
     sign_in_as @user
-    delete "/session" # logout destroys the row; the trail + cookie remain
+    delete "/session" # logout ends the row; the trail + cookie remain
 
     get "/session/new"
 

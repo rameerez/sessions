@@ -122,8 +122,8 @@ Sessions.configure do |config|
   # "Was this you?" email here. Not fired on a user's very first login.
   #
   # PASS THE EVENT to your mailer, not the session: the event is a
-  # persisted, GlobalID-able record that survives revocation (the session
-  # row may be destroyed before an async job runs) and already carries
+  # persisted, GlobalID-able record that survives revocation and account
+  # erasure cleanup, and already carries
   # everything the email needs — event.user, event.device_name,
   # event.location, event.country_flag, event.occurred_at.
   #

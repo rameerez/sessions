@@ -7,7 +7,7 @@ module Sessions
   # here. Either way the model gains the events trail and the revocation
   # verbs:
   #
-  #   current_user.sessions.active
+  #   current_user.sessions.live
   #   current_user.session_events.failed_logins.last_24_hours
   #   current_user.revoke_other_sessions!     # "sign out everywhere else"
   #   current_user.revoke_all_sessions!       # the account-takeover hammer
@@ -75,7 +75,7 @@ module Sessions
     def revoke_other_sessions!(current: nil, by: nil, reason: :logout_everywhere)
       current = Sessions.current if current.nil?
 
-      scope = sessions
+      scope = sessions.live
       scope = scope.where.not(id: current.id) if current.respond_to?(:id)
       scope.each { |session| session.revoke!(reason: reason, by: by || self) }
       true
@@ -84,7 +84,7 @@ module Sessions
     # The admin hammer — the account-takeover response. Revokes EVERYTHING,
     # including the session serving this request if it belongs to this user.
     def revoke_all_sessions!(by: nil, reason: :admin_revoked)
-      sessions.each { |session| session.revoke!(reason: reason, by: by) }
+      sessions.live.each { |session| session.revoke!(reason: reason, by: by) }
       true
     end
 

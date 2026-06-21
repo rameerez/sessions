@@ -3,13 +3,14 @@
 module Sessions
   # The append-only login-activity trail: every successful AND failed login,
   # logout, revocation and expiry — with attempted identity, device, geo,
-  # and the linkage no prior art has: `session_id` points at the live
+  # and the linkage no prior art has: `session_id` points at the lifecycle
   # registry row the event created (or ended), so a suspicious login in the
   # trail is one click away from revoking the session it started.
   #
-  # `session_id` is a plain column with NO foreign key on purpose: registry
-  # rows get destroyed on revoke/logout (rows = active sessions); history
-  # must survive them.
+  # `session_id` is a plain column with NO foreign key on purpose: hosts may
+  # still hard-delete rows for account erasure or legacy Rails destroy_all
+  # flows, and history must survive that. Normal v0.2 logout/revocation ends
+  # the row in place and records an event as audit, not liveness state.
   #
   # Rows are written through one tolerant pipeline (`.record!`): unknown
   # attributes are dropped instead of raising, so hosts can add or remove
@@ -89,10 +90,9 @@ module Sessions
       end
 
       # Same tolerant attribute pipeline as `record!`, but persistence errors
-      # bubble. Explicit revocation relies on the end-event as a durable
-      # tombstone after the live row is deleted, so it must fail as a single
-      # transaction instead of silently creating a "row missing, no tombstone"
-      # shape that would fail open on the revoked device.
+      # bubble. `Session#end!` writes lifecycle state and its matching audit
+      # event in one transaction; if the event cannot be written, the row must
+      # stay live rather than silently losing the audit trail.
       def record_strict!(attributes, notify: true)
         event = new
         attributes.each do |name, value|

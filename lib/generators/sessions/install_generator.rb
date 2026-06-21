@@ -181,7 +181,7 @@ module Sessions
         say "           schedule: every day at 4am"
 
         say "\nEvery login now lands on the devices page and in the trail:"
-        say "  current_user.sessions.active     # live devices, revocable"
+        say "  current_user.sessions.live       # live devices, revocable"
         say "  current_user.session_history     # the trail — logins, failures, revocations"
         say "\nEvery session, every device, every login — tracked. 🔐✨\n", :green
       end

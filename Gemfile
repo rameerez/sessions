@@ -43,7 +43,7 @@ group :test do
   # is tiny (rack middleware) and lets us exercise the full hook ABI
   # (after_set_user/before_failure/before_logout) without dragging all of
   # Devise into the default test bundle. Devise-specific behavior is
-  # duck-typed and covered with stubs; CarHey/LicenseSeat are the real-Devise
+  # duck-typed and covered with stubs; HostApp/LicenseSeat are the real-Devise
   # incubation apps.
   gem "warden"
 

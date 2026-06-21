@@ -159,8 +159,9 @@ class ModelTest < ActiveSupport::TestCase
     create_session_for(user)
     create_session_for(user)
 
-    assert_equal 2, user.sessions.count
-    refute user.sessions.exists?(oldest.id)
+    assert_equal 2, user.sessions.live.count
+    assert Session.exists?(oldest.id)
+    assert_equal "pruned", oldest.reload.ended_reason
     assert_equal "pruned", Sessions::Event.revocations.sole.revoked_reason
   end
 
@@ -174,7 +175,7 @@ class ModelTest < ActiveSupport::TestCase
       row.save!
     end
 
-    assert_equal 2, user.sessions.count,
+    assert_equal 2, user.sessions.live.count,
                  "adoption skips the trail and dedup — never the hard cap on live rows"
   end
 
@@ -189,28 +190,30 @@ class ModelTest < ActiveSupport::TestCase
 
   # --- Revocation (the airtight part) ---------------------------------------------
 
-  test "revoke! destroys the row and writes a revoked event with reason and actor" do
+  test "revoke! ends the row and writes a revoked event with reason and actor" do
     user = create_user
     admin = create_user
     row = create_session_for(user)
 
     row.revoke!(reason: :admin_revoked, by: admin)
 
-    refute Session.exists?(row.id)
+    assert Session.exists?(row.id)
+    assert row.reload.ended?
+    assert_equal "admin_revoked", row.ended_reason
     event = Sessions::Event.revocations.sole
     assert_equal "admin_revoked", event.revoked_reason
     assert_equal "User##{admin.id}", event.metadata["revoked_by"]
     assert_equal row.id, event.session_id
   end
 
-  test "revoke! keeps the live row when the durable tombstone cannot be written" do
+  test "revoke! keeps the live row when the audit event cannot be written" do
     row = create_session_for(create_user)
     Sessions::Event.stubs(:record_strict!).raises(ActiveRecord::StatementInvalid, "events table down")
 
     assert_raises(ActiveRecord::StatementInvalid) { row.revoke!(reason: :admin_revoked) }
 
     assert Session.exists?(row.id),
-           "explicit revocation must not create a missing-row/no-tombstone state that Warden must fail open"
+           "explicit revocation must not clear lifecycle state without its matching audit event"
   end
 
   test "revoke! fires on_session_revoked with kwargs" do
@@ -224,16 +227,28 @@ class ModelTest < ActiveSupport::TestCase
     assert_equal :user_revoked, captured[2]
   end
 
+  test "revoke! side effects only run when the row transitions from live to ended" do
+    calls = []
+    Sessions.config.on_session_revoked = ->(session:, by:, reason:) { calls << [session, by, reason] }
+    row = create_session_for(create_user)
+
+    row.revoke!(reason: :admin_revoked)
+    row.revoke!(reason: :user_revoked)
+
+    assert_equal 1, calls.size
+    assert_equal :admin_revoked, calls.first[2]
+    assert_equal 1, Sessions::Event.revocations.count
+    assert_equal "admin_revoked", row.reload.ended_reason
+  end
+
   test "revoke! rotates remember-me credentials when the user supports it" do
     user = create_user
-    def user.forget_me!
-      @forgotten = true
-    end
+    User.any_instance.expects(:forget_me!)
     row = create_session_for(user)
 
     row.revoke!
 
-    assert user.instance_variable_get(:@forgotten)
+    assert row.reload.ended?
   end
 
   test "config.revoke_remember_me = false leaves remember-me alone" do

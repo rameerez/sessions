@@ -1,0 +1,38 @@
+# frozen_string_literal: true
+
+# v0.2 upgrade: session rows are lifecycle records now. A live device is
+# `ended_at: nil`; explicit ending state lives on the row instead of being
+# inferred from a missing row plus a sessions_events tombstone.
+class AddSessionsLifecycleTo<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    change_table :<%= table_name %>, bulk: true do |t|
+      t.datetime :ended_at unless column_exists?(:<%= table_name %>, :ended_at)
+      t.string :ended_reason unless column_exists?(:<%= table_name %>, :ended_reason)
+      t.string :ended_by_type unless column_exists?(:<%= table_name %>, :ended_by_type)
+      t.send(reference_column_type, :ended_by_id) unless column_exists?(:<%= table_name %>, :ended_by_id)
+      t.send(json_column_type, :ended_metadata) unless column_exists?(:<%= table_name %>, :ended_metadata)
+    end
+
+    add_index :<%= table_name %>, :ended_at unless index_exists?(:<%= table_name %>, :ended_at)
+    add_index :<%= table_name %>, :ended_reason unless index_exists?(:<%= table_name %>, :ended_reason)
+    add_index :<%= table_name %>, %i[ended_by_type ended_by_id] unless index_exists?(:<%= table_name %>, %i[ended_by_type ended_by_id])
+  end
+
+  private
+
+  def reference_column_type
+    config = Rails.configuration.generators
+    case config.options[config.orm][:primary_key_type]
+    when :uuid then :uuid
+    when :string then :string
+    when :integer, :serial then :integer
+    else :bigint
+    end
+  end
+
+  def json_column_type
+    return :jsonb if connection.adapter_name.match?(/postg/i)
+
+    :json
+  end
+end

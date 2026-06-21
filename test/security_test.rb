@@ -8,7 +8,7 @@ require "test_helper"
 # tests are the contract that none of that can happen.
 class SecurityTest < ActionDispatch::IntegrationTest
   setup do
-    @user = User.create!(email_address: "javi@example.com", password: "s3kr1t-pass")
+    @user = User.create!(email_address: "user@example.test", password: "s3kr1t-pass")
   end
 
   teardown do
@@ -38,7 +38,7 @@ class SecurityTest < ActionDispatch::IntegrationTest
 
     delete "/session"
     assert_response :see_other
-    assert_equal 0, @user.sessions.count
+    assert_equal 0, @user.sessions.live.count
   end
 
   test "even Event.record! itself failing never breaks a login" do
@@ -79,7 +79,7 @@ class SecurityTest < ActionDispatch::IntegrationTest
     assert_redirected_to "/session/new"
   end
 
-  test "a signed cookie for a destroyed session row is a clean redirect" do
+  test "a signed cookie for a raw-deleted session row is a clean redirect" do
     sign_in_as @user
     @user.sessions.sole.delete # raw delete: not even revocation bookkeeping
 

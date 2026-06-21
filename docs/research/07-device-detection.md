@@ -1,6 +1,6 @@
 # Device intelligence: UA parsing, Hotwire Native, client hints, IP capture
 
-Researched 2026-06-11. Code citations are from read-only clones under `/tmp/sessions-research/` (browser, device_detector, hotwire-native-ios, hotwire-native-android, turbo-rails, rails-stable @ v8.1.3) and the local apps under `/Users/javi/GitHub/`. Web citations carry URL + fetch date.
+Researched 2026-06-11. Code citations are from read-only clones under `/tmp/sessions-research/` (browser, device_detector, hotwire-native-ios, hotwire-native-android, turbo-rails, rails-stable @ v8.1.3) and the local apps under `/path/to/repos/`. Web citations carry URL + fetch date.
 
 ## Top findings
 
@@ -11,7 +11,7 @@ Researched 2026-06-11. Code citations are from read-only clones under `/tmp/sess
 - **Android WebView is explicitly excluded from Chrome's UA reduction** ("We don't have current plans for User-Agent Reduction on iOS and Android WebView" — chromium.org/updates/ua-reduction, fetched 2026-06-10). So Hotwire Native **Android** UAs still carry real device model + real Android version. Hotwire Native **iOS** UAs carry real iOS version but never the hardware model.
 - **Web Chrome UAs are husks since 2023**: frozen `Windows NT 10.0`, `Intel Mac OS X 10_15_7`, `Linux; Android 10; K`, minor versions `0.0.0`. Real data moved to UA Client Hints — which **only Chromium ships; Safari and Firefox still refuse as of June 2026**.
 - **iPadOS masquerades as macOS by default** since iPadOS 13 — server-side, an iPad on Safari is byte-identical to a Mac. No fix without JS.
-- **Our four local apps customize the UA prefix today but none embeds app version or (iOS) device model** — the gem should ship a recommended prefix convention; CarHey's native HTTP client already proves the pattern (`"CarHey Android 1.0.5 (build 6; Android 14; sdk 34; Pixel 7)"`).
+- **Our four local apps customize the UA prefix today but none embeds app version or (iOS) device model** — the gem should ship a recommended prefix convention; HostApp's native HTTP client already proves the pattern (`"HostApp Android 1.0.5 (build 6; Android 14; sdk 34; Pixel 7)"`).
 - **`request.remote_ip` behind Cloudflare returns a Cloudflare edge IP** unless CF ranges are added to `trusted_proxies` (which *replaces* the private-range defaults) — document `cloudflare-rails` or an `ip_resolver` hook. Portable IP column: `string limit: 45`; `inet` is Postgres-only.
 
 ## A. Ruby UA parsers: `browser` vs `device_detector`
@@ -56,7 +56,7 @@ Researched 2026-06-11. Code citations are from read-only clones under `/tmp/sess
 1. **Always persist the raw UA in a `text` column** (no 255 limit) plus the relevant raw Client-Hint headers when present. Parsing is a *projection* that can be re-run as parsers/conventions improve. Validated by uniform prior art.
 2. **Hard dependency on `browser`** as the default web parser: MIT, zero-dep, tiny, Rails-aware, good enough for "Chrome 137 on macOS" + bot flagging. A drop-in gem needs device intel working with zero setup; an adapter-only design would gut the first-run experience.
 3. **Optional `device_detector` adapter** (auto-upgrade if the host app bundles it): better device names on legacy/Android UAs, native Client-Hints handling, much bigger bot DB. Don't hard-depend: LGPL, 1.5 MB data, 2-years-stale releases.
-4. **Built-in native-app UA parser that runs first** (before any web parser): recognizes `Hotwire Native iOS|Android`, `Turbo Native`, the recommended prefix convention below, and CarHey's existing shapes. This is the gem's actual moat; no third-party parser does it.
+4. **Built-in native-app UA parser that runs first** (before any web parser): recognizes `Hotwire Native iOS|Android`, `Turbo Native`, the recommended prefix convention below, and HostApp's existing shapes. This is the gem's actual moat; no third-party parser does it.
 5. Expose `config.ua_parser = :browser | :device_detector | ->(ua, headers) { DeviceInfo.new(...) }` for escape hatches, and stamp rows with parser identity/version if cheap (optional).
 
 ## B. Hotwire Native user agents
@@ -125,17 +125,17 @@ Substring contract: `"Turbo Native"` or `"Hotwire Native"` anywhere in the UA. T
 
 | App | Prefix set | Where | Effective UA shape |
 |---|---|---|---|
-| carhey-ios | `"CarHey iOS; RailsFast Native iOS;"` (`{App}` from `CFBundleDisplayName`) | `RailsFast/Core/AppConfiguration.swift:10-12`, applied `RailsFast/App/AppDelegate.swift:103` | `Mozilla/5.0 (iPhone; CPU iPhone OS x_y like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CarHey iOS; RailsFast Native iOS; Hotwire Native iOS; Turbo Native iOS; bridge-components: […]` |
+| hostapp-ios | `"HostApp iOS; RailsFast Native iOS;"` (`{App}` from `CFBundleDisplayName`) | `RailsFast/Core/AppConfiguration.swift:10-12`, applied `RailsFast/App/AppDelegate.swift:103` | `Mozilla/5.0 (iPhone; CPU iPhone OS x_y like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) HostApp iOS; RailsFast Native iOS; Hotwire Native iOS; Turbo Native iOS; bridge-components: […]` |
 | railsfast-ios | `"RailsFast iOS; RailsFast Native iOS;"` | `RailsFast/Core/AppConfiguration.swift:10-12`, `RailsFast/App/AppDelegate.swift:93-99` | same shape, `RailsFast` tokens |
-| carhey-android | `"CarHey Android;"` | `app/src/main/java/com/carhey/android/CarHeyApplication.kt:169` | `CarHey Android; Hotwire Native Android; Turbo Native Android; bridge-components: […]; Mozilla/5.0 (Linux; Android NN; <Model> Build/…; wv) … Chrome/NNN.0.0.0 Mobile Safari/537.36` |
+| hostapp-android | `"HostApp Android;"` | `app/src/main/java/com/hostapp/android/HostAppApplication.kt:169` | `HostApp Android; Hotwire Native Android; Turbo Native Android; bridge-components: […]; Mozilla/5.0 (Linux; Android NN; <Model> Build/…; wv) … Chrome/NNN.0.0.0 Mobile Safari/537.36` |
 | railsfast-android | `"${BuildConfig.APPLICATION_NAME} Android; RailsFast Native Android;"` | `app/src/main/java/com/railsfast/android/RailsFastApplication.kt:45-46` | same shape with two leading brand segments |
 
 So today: **no webview UA carries the app version anywhere, and iOS UAs carry no device model.** Android model/OS arrive free via the WebView default UA.
 
-However, CarHey's *native* (URLSession/OkHttp) calls already use a richer convention the gem should accept as prior art:
+However, HostApp's *native* (URLSession/OkHttp) calls already use a richer convention the gem should accept as prior art:
 
-- iOS: `"\(applicationName) iOS \(version) (build \(build); iOS \(osVersion); \(resolvedModel))"` → e.g. `CarHey iOS 1.0.5 (build 6; iOS 19.5; iPhone15,2)` (`carhey-ios/RailsFast/Core/NativeHttpClient.swift:61-71`), plus headers `X-Client-Platform/-Version/-Build/-OS` (`NativeHttpClient.swift:13-17`).
-- Android: `"CarHey Android $versionName (build $versionCode; Android $osRelease; sdk $sdkInt; $device)"` → e.g. `CarHey Android 1.0.5 (build 6; Android 14; sdk 34; Pixel 7)` (`carhey-android/app/src/main/java/com/carhey/android/ClientHeaders.kt:66-76`; header names `:25-29`).
+- iOS: `"\(applicationName) iOS \(version) (build \(build); iOS \(osVersion); \(resolvedModel))"` → e.g. `HostApp iOS 1.0.5 (build 6; iOS 19.5; iPhone15,2)` (`hostapp-ios/RailsFast/Core/NativeHttpClient.swift:61-71`), plus headers `X-Client-Platform/-Version/-Build/-OS` (`NativeHttpClient.swift:13-17`).
+- Android: `"HostApp Android $versionName (build $versionCode; Android $osRelease; sdk $sdkInt; $device)"` → e.g. `HostApp Android 1.0.5 (build 6; Android 14; sdk 34; Pixel 7)` (`hostapp-android/app/src/main/java/com/hostapp/android/ClientHeaders.kt:66-76`; header names `:25-29`).
 
 ### Recommended UA convention for the gem's README
 
@@ -143,11 +143,11 @@ Use an RFC 9110-style product token as the `applicationUserAgentPrefix`, ending 
 
 ```text
 <AppName>/<version> (<model>; <os> <os_version>; build <build>);
-e.g.  CarHey/2.4.1 (iPhone15,2; iOS 19.5; build 241);
-e.g.  CarHey/2.4.1 (Pixel 8; Android 16; build 241);
+e.g.  HostApp/2.4.1 (iPhone15,2; iOS 19.5; build 241);
+e.g.  HostApp/2.4.1 (Pixel 8; Android 16; build 241);
 ```
 
-Parse rule (gem-side, tolerant): `%r{(?<app>[\w .-]+)/(?<version>\d[\w.]*) \((?<fields>[^)]*)\)}` with semicolon-split, order-insensitive fields; also accept CarHey's space-separated legacy `"CarHey iOS 1.0.5 (build 6; …)"`. Everything else (Hotwire markers, WebView UA) stays intact, so `hotwire_native_app?` and bridge components keep working.
+Parse rule (gem-side, tolerant): `%r{(?<app>[\w .-]+)/(?<version>\d[\w.]*) \((?<fields>[^)]*)\)}` with semicolon-split, order-insensitive fields; also accept HostApp's space-separated legacy `"HostApp iOS 1.0.5 (build 6; …)"`. Everything else (Hotwire markers, WebView UA) stays intact, so `hotwire_native_app?` and bridge components keep working.
 
 README client snippets:
 
@@ -156,7 +156,7 @@ README client snippets:
 ```swift
 var u = utsname(); uname(&u)
 let model = withUnsafeBytes(of: &u.machine) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
-Hotwire.config.applicationUserAgentPrefix = "CarHey/\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0") (\(model); iOS \(UIDevice.current.systemVersion));"
+Hotwire.config.applicationUserAgentPrefix = "HostApp/\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0") (\(model); iOS \(UIDevice.current.systemVersion));"
 ```
 
 (`model` is `"iPhone15,2"` on device, `"arm64"` on Simulator — fine for production traffic.)
@@ -165,7 +165,7 @@ Hotwire.config.applicationUserAgentPrefix = "CarHey/\(Bundle.main.infoDictionary
 
 ```kotlin
 Hotwire.config.applicationUserAgentPrefix =
-    "CarHey/${BuildConfig.VERSION_NAME} " +
+    "HostApp/${BuildConfig.VERSION_NAME} " +
     "(${Build.MODEL}; Android ${Build.VERSION.RELEASE}; build ${BuildConfig.VERSION_CODE});"
 ```
 

@@ -37,6 +37,11 @@ class AddSessionsColumnsToSessions < ActiveRecord::Migration[7.1]
 
       t.datetime :last_seen_at
       t.string :last_seen_ip, limit: 45
+
+      t.datetime :ended_at
+      t.string :ended_reason
+      t.references :ended_by, polymorphic: true, type: foreign_key_type
+      t.send(json_column_type, :ended_metadata)
     end
 
     add_index :sessions, :device_id
@@ -46,9 +51,16 @@ class AddSessionsColumnsToSessions < ActiveRecord::Migration[7.1]
     add_index :sessions, :auth_provider
     add_index :sessions, :country_code
     add_index :sessions, :last_seen_at
+    add_index :sessions, :ended_at
+    add_index :sessions, :ended_reason
+    add_index :sessions, %i[ended_by_type ended_by_id]
   end
 
   private
+
+  def foreign_key_type
+    :bigint
+  end
 
   # match? (not equality): PostGIS apps report adapter_name "PostGIS" and
   # are PostgreSQL too.

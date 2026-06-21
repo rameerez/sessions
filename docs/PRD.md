@@ -1,7 +1,7 @@
 # `sessions` — Product Requirements Document
 
 > **Status**: Draft v1 for review (Javi). **Date**: 2026-06-11.
-> **Research base**: every claim and shape in this document is backed by the nine research memos in [`docs/research/`](research/) — read-only audits of CarHey, LicenseSeat, the rameerez gem ecosystem, rails/rails (v8.1.3 + main), Devise 5.0.4 + Warden + devise-security, OmniAuth + google_sign_in + webauthn-ruby, authtrail + authie + authentication-zero + Rodauth, the `browser`/`device_detector` parsers, hotwire-native-ios/android, plus live web research (all sources fetched 2026-06-10/11, exact URLs inline and in the memos). Citations below use the form `(→ research/NN §X)` plus direct URLs where load-bearing.
+> **Research base**: every claim and shape in this document is backed by the nine research memos in [`docs/research/`](research/) — read-only audits of HostApp, LicenseSeat, the rameerez gem ecosystem, rails/rails (v8.1.3 + main), Devise 5.0.4 + Warden + devise-security, OmniAuth + google_sign_in + webauthn-ruby, authtrail + authie + authentication-zero + Rodauth, the `browser`/`device_detector` parsers, hotwire-native-ios/android, plus live web research (all sources fetched 2026-06-10/11, exact URLs inline and in the memos). Citations below use the form `(→ research/NN §X)` plus direct URLs where load-bearing.
 
 ---
 
@@ -11,8 +11,8 @@
 
 `sessions` gives every Rails 8+ app, in one `bundle add` + one generator + one `has_sessions` macro:
 
-1. **A live device registry** — every active session, enriched with parsed device intelligence ("Chrome 137 on macOS", "CarHey 2.4.1 on iPhone 15 Pro (iOS 19.5)"), IP geolocation (via `trackdown`, soft dependency), auth method ("via Google", "via passkey"), and throttled last-seen tracking.
-2. **Per-session remote revocation** — "log out of that device", "sign out everywhere else" — that actually works on Rails 8 omakase auth (destroy the row), on Devise (token-per-row generalization of devise-security's proven `session_limitable` mechanism), and on remember-me cookies.
+1. **A live device registry** — every active session, enriched with parsed device intelligence ("Chrome 137 on macOS", "HostApp 2.4.1 on iPhone 15 Pro (iOS 19.5)"), IP geolocation (via `trackdown`, soft dependency), auth method ("via Google", "via passkey"), and throttled last-seen tracking.
+2. **Per-session remote revocation** — "log out of that device", "sign out everywhere else" — that actually works on Rails 8 omakase auth (end the lifecycle row), on Devise (token-per-row generalization of devise-security's proven `session_limitable` mechanism), and on remember-me cookies.
 3. **An append-only login-activity trail** — every successful *and failed* login attempt, logout, and revocation, with attempted identity, device, geo, and failure reason — linked to the live session it created (the linkage no prior art has, → research/06 §Improve).
 4. **A drop-in "Your devices" page** — engine-mounted, Tailwind-friendly, i18n'd (en + es), matching the GitHub/Google/Stripe UX contract — plus admin-grade scopes for fraud triage and a madmin recipe.
 5. **First-class citizenship for every 2026 login method**: Rails 8 native auth, Devise (4.x & 5.x), OmniAuth/OAuth (with failed-OAuth capture), Google One Tap (FedCM-era), Sign in with Apple, passkeys, magic links — via automatic classification plus a one-line `Sessions.tag` API for the flows that can't self-identify (→ research/05).
@@ -29,7 +29,7 @@ The gem **decorates the session of record; it never becomes it** (the #1 lesson 
 ### 1.1 Rails 8 omakase auth: a substrate, deliberately unfinished
 
 - Rails 8.0 (2024-11-07) shipped `bin/rails generate authentication`: a `Session < ApplicationRecord` model (2 lines), a `sessions` table (`user:references ip_address:string user_agent:string`), an `Authentication` concern, and a signed **permanent** cookie holding the Session row id — `cookies.signed.permanent[:session_id]`, httponly, SameSite=Lax, 20-year expiry ([authentication.rb.tt](https://github.com/rails/rails/blob/main/railties/lib/rails/generators/rails/authentication/templates/app/controllers/concerns/authentication.rb.tt), → research/03 §1).
-- **Every request resolves the row** (`Session.find_by(id: cookies.signed[:session_id])`), so *destroying a row is instant remote revocation*. Rails built the revocation primitive and shipped no product on top of it: the only generated route is singular `resource :session` — no index, no devices page; ip/user_agent are written once and never read again; **no code path ever UPDATEs a session row**, so `updated_at == created_at` forever (grep-verified, → research/03 §2).
+- **Every request resolves the row** (`Session.find_by(id: cookies.signed[:session_id])`), so a lifecycle row can be made server-revocable without changing Rails' cookie shape. Rails built the substrate and shipped no product on top of it: the only generated route is singular `resource :session` — no index, no devices page; ip/user_agent are written once and never read again; **no code path ever UPDATEs a session row**, so `updated_at == created_at` forever (grep-verified, → research/03 §2).
 - The punchline: Rails' own security guide recommends an `updated_at`-based `Session.sweep` for expiry ([security guide §sessions](https://guides.rubyonrails.org/security.html)) **that the generated code can never satisfy because nothing touches `updated_at`** (→ research/03 §5). The framework documents the hole this gem fills.
 - The gaps are **policy, not backlog**. DHH on the PR: *"This is not intended to be an all-singing, all-dancing answer to every possible authentication concern… do not expect magic links or passkeys or 2FA. That's not going to happen with this generator"* ([rails/rails#52328](https://github.com/rails/rails/pull/52328)). Rails 8.1 (2025-10-22) added zero auth features (only: password reset now `sessions.destroy_all`s, and passwords#create got `rate_limit`); 8.2 edge adds only Argon2 + Sec-Fetch-Site CSRF. The `Authentication` concern is **byte-identical from 8.0.5 through 8.1.3 to main** — an exceptionally stable instrumentation target (→ research/03 §4, research/08 §Timeline).
 
@@ -50,7 +50,7 @@ The gem **decorates the session of record; it never becomes it** (the #1 lesson 
 ### 1.4 Hotwire Native
 
 - Hotwire Native UA construction is deterministic and documented in SDK source: iOS *appends* `"Hotwire Native iOS; Turbo Native iOS; bridge-components: […]"`; Android *prepends* its segment to the stock Chromium WebView UA. `turbo_native_app?` matches `/(Turbo|Hotwire) Native/` (→ research/07 §B).
-- **Android WebView is exempt from Chrome's UA reduction** — native Android UAs still carry real device model + OS version for free. iOS carries real OS version but never the hardware model; app version appears nowhere by default. CarHey's native HTTP clients already use a richer convention (`"CarHey Android 1.0.5 (build 6; Android 14; sdk 34; Pixel 7)"` + validated `X-Client-*` headers) that the gem should formalize (→ research/07 §B, research/01 §3).
+- **Android WebView is exempt from Chrome's UA reduction** — native Android UAs still carry real device model + OS version for free. iOS carries real OS version but never the hardware model; app version appears nowhere by default. HostApp's native HTTP clients already use a richer convention (`"HostApp Android 1.0.5 (build 6; Android 14; sdk 34; Pixel 7)"` + validated `X-Client-*` headers) that the gem should formalize (→ research/07 §B, research/01 §3).
 
 ### 1.5 The gap, in one table
 
@@ -123,7 +123,7 @@ GitHub (Settings → Sessions + security log), Google ("Your devices" + the cano
 5. **DX is candy.** `has_sessions`, `session.device_name`, `session.revoke!`, `user.revoke_other_sessions!` — bang verbs, `?` predicates, kwargs, chainable scopes, reads like English (→ research/02 §4).
 6. **Soft dependencies everywhere.** `trackdown` (geo), `device_detector` (parser upgrade), Devise/Warden, OmniAuth — all optional, detected with `defined?()`, rescued everywhere. Only hard runtime deps: Rails frameworks + `browser` (MIT, zero-dep, 15 KB) (→ research/07 §A, research/02 §2).
 7. **Privacy as a feature.** Bounded retention + purge job, optional IP truncation, optional AR encryption, no client-side fingerprinting ever (WP224 consent trap), lat/lng precision reduction (→ research/09 §Privacy).
-8. **Incubated in production.** Built against CarHey (Devise 5 + Hotwire Native + Cloudflare + Spanish UI) and LicenseSeat (Devise 4.9 + MaxMind trackdown + api_keys), extracted only when the shapes survive contact with both (→ research/01).
+8. **Incubated in production.** Built against HostApp (Devise 5 + Hotwire Native + Cloudflare + Spanish UI) and LicenseSeat (Devise 4.9 + MaxMind trackdown + api_keys), extracted only when the shapes survive contact with both (→ research/01).
 
 ---
 
@@ -133,9 +133,9 @@ GitHub (Settings → Sessions + security log), Google ("Your devices" + the cano
 |---|---|---|
 | **End user** | "Is my account safe? What's logged in? Kick that device." | `/settings/sessions` devices page: friendly device names, location, last seen, current-session badge, per-row Log out, "Sign out everywhere else", and a "Was this you?" email on new-device logins. |
 | **Developer** | "Give me GitHub-style session security without building it for the third time." | `bundle add sessions` → `rails g sessions:install` → `has_sessions` → done. Works identically on Rails 8 auth and Devise; OAuth/native just work; one initializer of lambdas to integrate mailers/audit (goodmail, noticed, AuditLog…). |
-| **Admin / T&S** | "Who tried to brute-force us last night? Is this account being taken over? Kill every session this user has." | `Sessions::Event` scopes (failed logins, by IP, by identity, velocity), per-user session admin + `revoke_all!`, new-device/new-country signals, madmin resource recipe, optional tee into the host's AuditLog (CarHey pattern). |
+| **Admin / T&S** | "Who tried to brute-force us last night? Is this account being taken over? Kill every session this user has." | `Sessions::Event` scopes (failed logins, by IP, by identity, velocity), per-user session admin + `revoke_all!`, new-device/new-country signals, madmin resource recipe, optional tee into the host's AuditLog (HostApp pattern). |
 
-Three installed bases to serve from day one: (a) Rails 8 generator apps, (b) Devise apps (CarHey, LicenseSeat, RailsFast), (c) any of the above with OAuth/One Tap/passkeys/magic links layered on (→ research/08 §Implications).
+Three installed bases to serve from day one: (a) Rails 8 generator apps, (b) Devise apps (HostApp, LicenseSeat, RailsFast), (c) any of the above with OAuth/One Tap/passkeys/magic links layered on (→ research/08 §Implications).
 
 ---
 
@@ -180,14 +180,14 @@ Three installed bases to serve from day one: (a) Rails 8 generator apps, (b) Dev
 ┌─────────────────────────────┐         ┌──────────────────────────────────┐
 │  sessions (registry)        │         │  sessions_events (trail)         │
 │  host-owned, Rails-8-shaped │◄────────│  gem-owned, append-only          │
-│  LIVE state: one row =      │ session │  HISTORY: logins (ok+failed),    │
-│  one signed-in device.      │   _id   │  logouts, revocations, expiry.   │
-│  Destroyed on revoke/logout │         │  Survives session destruction.   │
+│  LIFECYCLE state: one row = │ session │  HISTORY: logins (ok+failed),    │
+│  one signed-in device;      │   _id   │  logouts, revocations, expiry.   │
+│  ended_at NULL means live.  │         │  Survives cleanup/erasure.       │
 └─────────────────────────────┘         └──────────────────────────────────┘
 ```
 
-- **One mental model**: *rows = active sessions; events = history.* `revoke!` destroys the registry row (instant logout — omakase semantics, same as Rails 8.1's own password-reset `destroy_all`) and writes a `revoked` event. "Expired sessions" in the UI come from the trail, not from tombstone rows. No soft-delete state machine to maintain.
-- The trail's `session_id` column (plain id, deliberately **no FK constraint** — the registry row it points at gets destroyed) is the linkage no prior art has: a suspicious login event is one click away from revoking the live session it created (→ research/06 §Improve).
+- **One mental model**: *rows = session lifecycle state; events = audit history.* `revoke!` ends the registry row in place (`ended_at`/`ended_reason`) and writes a `revoked` event in the same transaction. Devise/Warden never infers security intent from a missing row; it kicks only when a token-backed row has an explicit kicking lifecycle reason.
+- The trail's `session_id` column (plain id, deliberately **no FK constraint** — account erasure and legacy host deletes may still remove the registry row) is the linkage no prior art has: a suspicious login event is one click away from revoking the live session it created (→ research/06 §Improve).
 
 ### 6.2 Adopt-or-generate: the registry is always the Rails 8 shape
 
@@ -223,14 +223,14 @@ All gem logic lives in `Sessions::Model` (the concern) and `Sessions::Event` (ge
 
 Both first-class adapters activate automatically and independently (an app can have both — e.g. Devise app that later adds omakase auth for a second scope). Activation is duck-typed and guarded:
 
-- **Rails 8 adapter** (→ research/03 §Implications): `Rails.application.config.to_prepare` → if `defined?(::Session)` && table has `ip_address`/`user_agent` → `Session.include(Sessions::Model)`; if `ApplicationController.private_method_defined?(:start_new_session_for)` → `ApplicationController.prepend(Sessions::OmakaseControllerHooks)`. The prepend sits in front of the included `Authentication` concern in the ancestor chain, so `super`-wrapping `resume_session` (throttled touch) and `terminate_session` (logout event) is clean, name-stable-since-8.0, and requires zero app edits. Login/revocation events ride **model callbacks** — `after_create_commit` (login: ip/UA already on the row) and `after_destroy_commit` (revoked/logout) — which capture 100% of the generated lifecycle including 8.1's password-reset `destroy_all` (it instantiates and runs callbacks, → research/03 §Top 6).
+- **Rails 8 adapter** (→ research/03 §Implications): `Rails.application.config.to_prepare` → if `defined?(::Session)` && table has `ip_address`/`user_agent` → `Session.include(Sessions::Model)`; if `ApplicationController.private_method_defined?(:start_new_session_for)` → `ApplicationController.prepend(Sessions::OmakaseControllerHooks)`. The prepend sits in front of the included `Authentication` concern in the ancestor chain, so `super`-wrapping `resume_session` (throttled touch/expiry/end-state refusal) and `terminate_session` (logout lifecycle end) is clean, name-stable-since-8.0, and requires zero app edits. Login events ride **model callbacks** (`after_create_commit`: ip/UA already on the row); explicit logout/revocation uses `end!`; host-side `destroy_all` remains covered by the compatibility callback (→ research/03 §Top 6).
 - **Devise adapter** (→ research/04 §Implications): registered from a Railtie initializer guarded by `defined?(::Warden::Manager)` (Bundler.require precedes initializers; hooks live on the Manager *class* and are read live per request — no load-order coupling, no `require "warden"`). The four hooks:
   1. `after_set_user except: :fetch` — any fresh login (form, remember-me, OmniAuth, sign-up auto-login, post-password-reset). Guards: `warden.authenticated?(scope)` && `opts[:store] != false` (**critical**: token/HTTP-Basic auth fires this hook *every request* with `store: false` — without the guard we'd mint a session row per API call) && our skip flags. Creates the registry row, stores `[row_id, raw_token]` in `warden.session(scope)` (survives Warden's `:renew` SID rotation; auto-deleted by Warden on logout).
   2. `after_set_user only: :fetch` — per-request resume: look up row by id, `secure_compare` token digest; missing/revoked → `warden.raw_session.clear; warden.logout(scope); throw :warden, scope:, message: :session_revoked` (the proven session_limitable sequence); else throttled touch.
   3. `before_failure` — failed logins: persist scope/action/message/attempted_path from `env['warden.options']`; attempted identity from `request.params[scope]` **only when `request.post?` && credentials hash present** (filters out plain 401 page-hits and timeouts); never read the password key. Store Devise's failure symbol verbatim (`:invalid` under paranoid mode — don't infer account existence).
-  4. `before_logout` — mark row destroyed + `logout` event (fires once per scope; also on forced logouts like timeout).
+  4. `before_logout` — mark row ended + `logout` event (fires once per scope; also on forced logouts like timeout).
 - **OmniAuth integration** (→ research/05 §1): no hook needed for successes (the callback lands in the same controller seam either adapter already covers; we classify by sniffing `env['omniauth.auth']`). Failures: compose-wrap `OmniAuth.config.on_failure` in an after-Devise initializer — record `omniauth.error.type` + provider + origin + IP/UA, then call the original endpoint.
-- **Explicit API**: the universal seam for everything else — CarHey's manual native sign-in branch renders 422s without touching Warden's failure app, so it needs `Sessions.record_failed_attempt` (→ research/01 §Implications 3); One Tap/passkey/magic-link controllers call `Sessions.tag(request, method: :passkey, detail: {...})` before signing in.
+- **Explicit API**: the universal seam for everything else — HostApp's manual native sign-in branch renders 422s without touching Warden's failure app, so it needs `Sessions.record_failed_attempt` (→ research/01 §Implications 3); One Tap/passkey/magic-link controllers call `Sessions.tag(request, method: :passkey, detail: {...})` before signing in.
 
 ### 6.4 Auth-method classification pipeline
 
@@ -250,23 +250,23 @@ Taxonomy (two indexed columns + one JSON): `auth_method` ∈ `password, oauth, g
 Raw-first, three layers (→ research/07 §Implications):
 
 1. **Persist raw**: `user_agent` as `text` (no 255 truncation — authie's footgun; Hotwire Native UAs with bridge-components exceed 255), plus interesting headers (`Sec-CH-UA*`, `X-Client-*`) in a `client_hints` JSON column. Parsing is a projection; `sessions:reparse` (v1.x) can re-run it as parsers improve.
-2. **Native matcher first** (the moat — no third-party parser does this): `/(Turbo|Hotwire) Native (iOS|Android)/` (same contract as turbo-rails' `turbo_native_app?`) → platform; then the documented prefix convention `AppName/1.2.3 (iPhone15,2; iOS 19.5; build 241);` → app name/version/build/model/OS; CarHey's legacy shapes (`"CarHey Android 1.0.5 (build 6; Android 14; sdk 34; Pixel 7)"`) and validated `X-Client-Platform/Version/Build/OS` headers accepted as input too; on Android, fall back to the embedded WebView UA for model/OS (UA-reduction-exempt).
+2. **Native matcher first** (the moat — no third-party parser does this): `/(Turbo|Hotwire) Native (iOS|Android)/` (same contract as turbo-rails' `turbo_native_app?`) → platform; then the documented prefix convention `AppName/1.2.3 (iPhone15,2; iOS 19.5; build 241);` → app name/version/build/model/OS; HostApp's legacy shapes (`"HostApp Android 1.0.5 (build 6; Android 14; sdk 34; Pixel 7)"`) and validated `X-Client-Platform/Version/Build/OS` headers accepted as input too; on Android, fall back to the embedded WebView UA for model/OS (UA-reduction-exempt).
 3. **Web parser**: `browser` gem (hard dep: MIT, zero-dep, ~15 KB, maintained, ships `ios_app?`/`android_app?` webview heuristics — also what Mastodon uses) for browser name/version, OS family, device type, bot flag. **`device_detector` auto-upgrade adapter** when the host bundles it (better Android device names, Client-Hints-native, 108 KB bot list — but LGPL, 1.5 MB data, stale since 2024-07, which is also why it's not the default; GitLab wraps it with a 1024-char truncation we mirror). `config.ua_parser` accepts `:browser`, `:device_detector`, or a lambda.
 
-**Honest display names** (frozen-UA reality, → research/07 §C): never render frozen tokens as facts — "Chrome 137 on macOS" (no version), "Safari on iOS 19.5 · iPhone", "CarHey 2.4.1 on Pixel 8 (Android 16)". iPads on Safari display as "Safari on macOS" (no server-side tell; documented). Optional `config.request_client_hints = true` sets `Accept-CH` to recover real platform versions + Android models on Chromium; login POSTs are rarely first-navigations, so hints are reliably present exactly when we need them.
+**Honest display names** (frozen-UA reality, → research/07 §C): never render frozen tokens as facts — "Chrome 137 on macOS" (no version), "Safari on iOS 19.5 · iPhone", "HostApp 2.4.1 on Pixel 8 (Android 16)". iPads on Safari display as "Safari on macOS" (no server-side tell; documented). Optional `config.request_client_hints = true` sets `Accept-CH` to recover real platform versions + Android models on Chromium; login POSTs are rarely first-navigations, so hints are reliably present exactly when we need them.
 
 ### 6.6 Geolocation via `trackdown` (soft dependency)
 
 The contract, lifted verbatim from footprinted's proven integration (→ research/02 §2):
 
 - Guard every call with `defined?(Trackdown)`; rescue **everything** and log (trackdown raises on private/loopback IPs in dev — a geo failure must never block a login write).
-- Always `Trackdown.locate(ip.to_s, request: request)` so Cloudflare headers win when present (CarHey mode: zero-config, free, synchronous header read).
+- Always `Trackdown.locate(ip.to_s, request: request)` so Cloudflare headers win when present (HostApp mode: zero-config, free, synchronous header read).
 - MaxMind mode (LicenseSeat shape): geolocate in the gem's enrichment job, and **pre-extract CF-header geo at enqueue time** so workers never need the MaxMind DB.
 - Skip lookup when `country_code` already present. Store footprinted's proven column set (country_code/name, city, region; lat/lng on events only, precision-reduced). Flag emoji derives from `country_code` at render time — no column.
 
 ### 6.7 Touch, expiry & lifecycle
 
-- **Throttled touch**: `last_seen_at` updated at most every `config.touch_every` (default 5 minutes) via one conditional `update_all` statement (hot-row-safe, callback-free — CarHey's `IS DISTINCT FROM` pattern generalized; Rodauth's validate+touch-in-one-UPDATE proves the shape; authie's touch-every-request and devise-security's per-request `update_column` are the documented anti-patterns) (→ research/01 §Implications 6, research/06 §Steal).
+- **Throttled touch**: `last_seen_at` updated at most every `config.touch_every` (default 5 minutes) via one conditional `update_all` statement (hot-row-safe, callback-free — HostApp's `IS DISTINCT FROM` pattern generalized; Rodauth's validate+touch-in-one-UPDATE proves the shape; authie's touch-every-request and devise-security's per-request `update_column` are the documented anti-patterns) (→ research/01 §Implications 6, research/06 §Steal).
 - This finally makes the Rails security guide's own `Session.sweep` recommendation implementable (→ research/03 §5).
 - **Expiry**: `config.idle_timeout` / `config.max_session_lifetime` (both default `nil` — a tracking gem must not silently change login lifetimes; see §12) with `config.timeout_preset = :nist_aal2` sugar (24h absolute / 1h idle). Enforced inline at resume (both adapters) and by the generated `Sessions::SweepJob` (also prunes per-user overflow beyond `config.max_sessions_per_user`, default 100 — GitLab's number — and purges trail rows past retention).
 
@@ -321,7 +321,7 @@ create_table :sessions_events do |t|
   t.references :authenticatable, polymorphic: true   # nullable: unknown-identity failures
   t.string     :scope
   t.bigint     :session_id                   # ← the linkage. Plain column, NO FK constraint:
-                                             # registry rows get destroyed on revoke; history must survive.
+                                             # lifecycle rows can be erased; history must survive.
   t.string     :identity                     # email-as-typed (normalized), even for unknown accounts
   t.string     :auth_method, :auth_provider
   t.json       :auth_detail
@@ -375,12 +375,12 @@ Post-install message: ecosystem house style (emoji headline, numbered steps, yel
 ### 8.2 The model API
 
 ```ruby
-current_user.sessions.active            # live devices, most recent first
-current_user.sessions.inactive          # stale > 30 days (UI grouping, not enforcement)
+current_user.sessions.live              # live devices, most recent first
+current_user.sessions.inactive          # stale live rows > 30 days (UI grouping, not enforcement)
 
 session = current_user.sessions.find(params[:id])
 session.device_name        # => "Chrome 137 on macOS"
-                           # => "CarHey 2.4.1 on iPhone 15 Pro (iOS 19.5)"
+                           # => "HostApp 2.4.1 on iPhone 15 Pro (iOS 19.5)"
 session.location           # => "Madrid, Spain"  (+ session.country_flag => "🇪🇸")
 session.last_seen_at       # => 3 minutes ago
 session.current?           # => true for the request's own session
@@ -388,7 +388,7 @@ session.hotwire_native?    # session.native_ios? / session.native_android? / ses
 session.via_oauth?         # session.auth_method / .auth_provider / "Signed in with Google"
 session.suspicious?        # v1.x: new-IP/new-country heuristics
 
-session.revoke!(reason: :user_revoked, by: current_user)   # destroys row + writes event
+session.revoke!(reason: :user_revoked, by: current_user)   # ends row + writes event
 current_user.revoke_other_sessions!                         # GitHub's "sign out everywhere else"
 current_user.revoke_all_sessions!                           # admin hammer (account takeover response)
 
@@ -405,7 +405,7 @@ Sessions::Event.by_country("RU").logins                     # admin: geo filteri
 Sessions.current(request)                       # the registry row for this request (both adapters)
 Sessions.tag(request, method: :passkey, detail: { user_verified: true })   # before sign-in
 Sessions.record_failed_attempt(request, scope: :user, identity: params[:email],
-                               reason: :invalid_password)   # manual seams (CarHey's native branch)
+                               reason: :invalid_password)   # manual seams (HostApp's native branch)
 Sessions.track_login(user, request, method: :sso)           # fully manual integrations
 ```
 
@@ -424,7 +424,7 @@ Sessions.configure do |config|
   # — Device intelligence —
   config.ua_parser              = :browser       # :device_detector | ->(ua, headers) { ... }
   config.request_client_hints   = false          # set Accept-CH for real platform versions / Android models
-  config.native_app_names       = ["CarHey"]     # extra UA prefixes to recognize (auto-learned from convention)
+  config.native_app_names       = ["HostApp"]     # extra UA prefixes to recognize (auto-learned from convention)
   # — IP & geo —
   config.ip_resolver            = ->(request) { request.remote_ip }   # CF-Connecting-IP setups override
   config.ip_mode                = :full          # :truncated → zero last IPv4 octet / last 80 v6 bits (GA precedent)
@@ -456,14 +456,14 @@ end
 ```
 
 - chats-style isolated engine: `path: ""` root resources, semantic `sessions-*` CSS classes with minimal default styles (Tailwind-friendly, themeable), no JS beyond Turbo (`button_to` + `turbo_confirm`), `rails g sessions:views` ejection for full control (→ research/02 §7).
-- Alternatively, render the partials inside an existing settings shell (CarHey's `<section>`/`setting_row` pages; LicenseSeat's `settings` namespace): `render "sessions/devices", user: current_user`.
-- Contents per the standardized UX contract (§2.3): device icon by `device_type`, `device_name`, approximate location (labeled approximate), `last_seen_at` in words, "This device" badge, per-row **Log out** button, **Sign out of all other sessions** button, link to login history. i18n: `en` + `es` shipped (CarHey's UI is Spanish, → research/01 §5).
+- Alternatively, render the partials inside an existing settings shell (HostApp's `<section>`/`setting_row` pages; LicenseSeat's `settings` namespace): `render "sessions/devices", user: current_user`.
+- Contents per the standardized UX contract (§2.3): device icon by `device_type`, `device_name`, approximate location (labeled approximate), `last_seen_at` in words, "This device" badge, per-row **Log out** button, **Sign out of all other sessions** button, link to login history. i18n: `en` + `es` shipped (HostApp's UI is Spanish, → research/01 §5).
 
 ### 8.6 Generators
 
 - `sessions:install` — adaptive migration(s) + initializer + SweepJob into `app/jobs/` + `recurring.yml` snippet (trackdown/nondisposable pattern).
 - `sessions:views` — eject engine views/partials.
-- v1.x: `sessions:madmin` (resource files mirroring CarHey's `audit_log_resource.rb`), `sessions:one_tap`, `sessions:passkeys` integration injectors.
+- v1.x: `sessions:madmin` (resource files mirroring HostApp's `audit_log_resource.rb`), `sessions:one_tap`, `sessions:passkeys` integration injectors.
 
 ---
 
@@ -472,18 +472,18 @@ end
 ### 9.1 Rails 8 omakase (zero-touch)
 
 - **Login events**: `Session.after_create_commit` — ip/UA already on the row from `start_new_session_for`; classification pipeline runs against `Sessions::Current.request` (set by a tiny gem middleware that stores the request reference per-request — needed because model callbacks lack request context; reset automatically by the executor).
-- **Logout/revocation events**: `after_destroy_commit` (covers `terminate_session`, our `revoke!`, and 8.1's password-reset `destroy_all` — all instantiate and run callbacks, → research/03 §Top 6).
+- **Logout/revocation events**: `end!`/`revoke!` writes lifecycle state plus audit event transactionally; `after_destroy_commit` remains only as a compatibility hook for host-side raw deletes and Rails-generated `destroy_all` paths (→ research/03 §Top 6).
 - **Touch**: prepend-wrap `resume_session` → after `super`, throttled touch of `Current.session`.
 - **Failed logins**: two automatic layers + one manual: (a) prepend `SessionsController#create` when the generated duck-shape is detected — after `super`, if no new session was started and the request was a credentials POST, record `failed_login` with the permitted identity param; (b) subscribe to the `rate_limit.action_controller` notification (8.1+) for brute-force-threshold events — free signal, no code; (c) `Sessions.record_failed_attempt` for custom controllers. Opt-out: `config.track_failed_logins = false`.
 - **Edge cases encoded** (→ research/03 §Implications 8): the generated `sign_in_as` test helper creates rows with nil ip/UA — all parsing is nil-tolerant; `--api` apps lack `helper_method` — engine helpers are Base/API-aware; signed-not-encrypted cookie exposes sequential row ids (informational; revocation security rests on the signature); 20-year permanent cookie means our sweep + optional idle timeout is the only real expiry; `ip_address` truthfulness depends on `trusted_proxies` (README "Behind Cloudflare" section: cloudflare-rails / replacement-semantics warning / CF-Connecting-IP only when origin-locked).
 
-### 9.2 Devise / Warden (4.x and 5.x — CarHey is 5.0.4, LicenseSeat 4.9.4)
+### 9.2 Devise / Warden (4.x and 5.x — HostApp is 5.0.4, LicenseSeat 4.9.4)
 
 - The four hooks of §6.3, with the full guard set lifted from Devise's own hooks: skip flags (`env['sessions.skip']`, per-call `sign_in(user, sessions_skip: true)`, sticky session flag — mirroring session_limitable's three layers), `opts[:store] != false`, `warden.authenticated?(scope)`.
 - **Fixation-safe by construction**: Warden's `set_user` renews the Rack SID but keeps session *data* — our token, stored in `warden.session(scope)`, survives login rotation and is deleted by Warden on logout. We never key on the Rack SID (→ research/04 §Top 3).
-- **Remember-me**: a cookie re-auth is a real `:authentication` event (strategy `Rememberable`) arriving with a fresh Rack session → new registry row; stale rows get swept (v1) or re-linked via the browser-continuity cookie (v1.x). **Revocation closes the remember-me hole**: with `config.revoke_remember_me = true` (default), `revoke!` also rotates the user's remember credentials (Devise `forget_me!`/salt semantics — user-wide, documented: other devices keep their live sessions but cannot auto-revive after those end; GitLab does exactly this). CarHey's silent 1-year native remember-me makes this non-negotiable (→ research/01 §8 gap 4).
+- **Remember-me**: a cookie re-auth is a real `:authentication` event (strategy `Rememberable`) arriving with a fresh Rack session → new registry row; stale rows get swept (v1) or re-linked via the browser-continuity cookie (v1.x). **Revocation closes the remember-me hole**: with `config.revoke_remember_me = true` (default), `revoke!` also rotates the user's remember credentials (Devise `forget_me!`/salt semantics — user-wide, documented: other devices keep their live sessions but cannot auto-revive after those end; GitLab does exactly this). HostApp's silent 1-year native remember-me makes this non-negotiable (→ research/01 §8 gap 4).
 - **Multi-scope**: rows carry `scope`; `Devise.sign_out_all_scopes` fires `before_logout` once per scope — handled.
-- **Coexistence**: `:trackable` keeps working (we never set `devise.skip_trackable`); `has_sessions` simply supersedes it — README suggests dropping trackable columns when ready. `bypass_sign_in` runs no callbacks → same session continues, token stays valid (documented). Timeoutable may `throw` on the same `:fetch` event — we tolerate both hook orders. CarHey's read-only `warden.user(run_callbacks: false)` peeks and its stale-remember-cookie native bootstrap never fire our hooks (correct — no login happens) (→ research/01 §3, research/04 §Implications).
+- **Coexistence**: `:trackable` keeps working (we never set `devise.skip_trackable`); `has_sessions` simply supersedes it — README suggests dropping trackable columns when ready. `bypass_sign_in` runs no callbacks → same session continues, token stays valid (documented). Timeoutable may `throw` on the same `:fetch` event — we tolerate both hook orders. HostApp's read-only `warden.user(run_callbacks: false)` peeks and its stale-remember-cookie native bootstrap never fire our hooks (correct — no login happens) (→ research/01 §3, research/04 §Implications).
 
 ### 9.3 OAuth / OmniAuth
 
@@ -498,13 +498,13 @@ Successes auto-classified (§6.4) on whichever adapter is active. Failures: the 
 
 ### 9.5 Hotwire Native
 
-- Detection/parsing per §6.5. **Device identity = the cookie jar, never the UA**: Hotwire Native shares one session cookie between WebView navigations and native HTTP calls while presenting two different UAs — CarHey's NativeHttpClient explicitly syncs cookies — so one device = one registry row, with `client_hints` capturing the richer native-client headers (→ research/01 §3 "One cookie = one session across surfaces").
+- Detection/parsing per §6.5. **Device identity = the cookie jar, never the UA**: Hotwire Native shares one session cookie between WebView navigations and native HTTP calls while presenting two different UAs — HostApp's NativeHttpClient explicitly syncs cookies — so one device = one registry row, with `client_hints` capturing the richer native-client headers (→ research/01 §3 "One cookie = one session across surfaces").
 - README ships the 3-line iOS/Android `applicationUserAgentPrefix` snippets (app version everywhere, hardware model on iOS — Android model is free). Without them, the gem still yields platform + OS (+ Android model) from SDK defaults (→ research/07 §B).
 - The signed `session_id` cookie is readable from middleware (`request.cookie_jar.signed[:session_id]` — the generated ActionCable Connection uses the same trick) for native-API contexts outside controllers (→ research/03 §Implications 5).
 
 ### 9.6 trackdown modes
 
-- **CarHey mode** (zero config, Cloudflare): synchronous CF-header read at request time — free.
+- **HostApp mode** (zero config, Cloudflare): synchronous CF-header read at request time — free.
 - **LicenseSeat mode** (MaxMind initializer + refresh job): geo enrichment in `Sessions::GeolocateJob` with CF pre-extraction at enqueue.
 - No trackdown → geo columns stay nil; UI omits location cleanly; README points to trackdown setup (footprinted's call-out box pattern).
 
@@ -524,7 +524,7 @@ Your devices
 🖥  Chrome on macOS — This device                    [badge]
     Madrid, Spain · Active now · Signed in May 2 via Google
 
-📱  CarHey 2.4.1 on iPhone 15 Pro (iOS 19.5)        [Log out]
+📱  HostApp 2.4.1 on iPhone 15 Pro (iOS 19.5)        [Log out]
     Madrid, Spain · Active 3 minutes ago · Signed in Apr 28
 
 🖥  Firefox on Windows                               [Log out]
@@ -552,19 +552,19 @@ Requirements:
 
 - **Scopes are the product** (BYOUI, moderate's posture): `Sessions::Event.failed_logins.last_24_hours.group(:ip_address).count`, `.for_identity`, `.for_ip`, `.by_country`, `.new_devices`, `user.sessions.active`, `Sessions::Event.velocity(identity:, within: 10.minutes)` (v1.x).
 - **Admin verbs**: `user.revoke_all_sessions!(by: admin, reason: :admin_revoked)` — the account-takeover response; every admin action lands in the trail with `by`.
-- **madmin recipe** (`sessions:madmin` generator, v1.x): SessionResource + EventResource mirroring CarHey's `audit_log_resource.rb` (menu parent "Security", recent-first, RelativeTimeField) (→ research/01 §5).
-- **AuditLog tee**: `config.events = ->(event) { AuditLog.log(event_type: "session.#{event.name}", data: event.to_h, user: event.user, request: event.request) }` — one line wires CarHey's hash-chained ledger; same envelope works for Telegrama alerts (→ research/01 §2, research/02 §5).
+- **madmin recipe** (`sessions:madmin` generator, v1.x): SessionResource + EventResource mirroring HostApp's `audit_log_resource.rb` (menu parent "Security", recent-first, RelativeTimeField) (→ research/01 §5).
+- **AuditLog tee**: `config.events = ->(event) { AuditLog.log(event_type: "session.#{event.name}", data: event.to_h, user: event.user, request: event.request) }` — one line wires HostApp's hash-chained ledger; same envelope works for Telegrama alerts (→ research/01 §2, research/02 §5).
 - **New-device detection** (v1, powers `on_new_device`): a login is a *new device* when no prior session/event for that user matches on (device_type, os_name, app/browser identity) — deliberately coarse UA+IP-derived matching, never fingerprinting. New-country flag rides the same check when geo is present.
 
 ## 12. Security & privacy requirements (hard, each cited)
 
 1. **Never persist a usable session credential.** Devise-mode tokens: random 32-byte, stored as SHA-256 digest, raw value only in the user's Rack session (OWASP Cheat Sheet "log a salted-hash"; Discourse/Rodauth precedent; high-entropy random ⇒ plain SHA-256 suffices — no pepper KDF theater). Omakase mode stores nothing secret (cookie signature is the credential). Never log raw tokens or cookie values anywhere (→ research/09 §Compliance, research/06 §Steal).
 2. **Tracking is error-isolated** — every adapter body wrapped (authtrail `safely` pattern), failures logged at `warn`, login proceeds. A geo/parser/DB hiccup must never 500 a sign-in (→ research/02 §5).
-3. **Revocation is server-side and immediate** (ASVS 7.4.1): row destruction is checked on the very next request in both adapters; Devise revoke also invalidates remember-me by default (§9.2).
+3. **Revocation is server-side and immediate** (ASVS 7.4.1): lifecycle end state is checked on the very next request in both adapters; Devise revoke also invalidates remember-me by default (§9.2).
 4. **Terminate-others on password change** default-on (ASVS 3.3.3/7.4.3; Phoenix/Laravel/omakase-8.1 precedent). In Devise, the salt-embedded session value already kills cookie sessions on password change — our rows follow via the `:fetch` validation; we also emit the events.
 5. **Failed-attempt logging is enumeration-safe**: store Devise's message symbol verbatim (paranoid mode stays `:invalid`); never echo whether the identity exists in any UI; never store the password or its length; identity normalized (`strip.downcase`) for correlation (→ research/04 §3).
 6. **Data minimization** (GDPR Art. 5(1)(c)): no request bodies, no referrer trails (drop authtrail's `referrer` column), nullable IP, UA + IP + derived columns only. IPs and UAs are personal data (*Breyer* C-582/14, Recital 30) processed under Art. 6(1)(f)/Recital 49 (network security) — stated in README with a balancing-test note (→ research/09 §Privacy).
-7. **Bounded retention**: trail default 12 months (CNIL 6–12), purge job generated and scheduled; registry rows die with their sessions (+ cap eviction). Right-to-erasure: `dependent: :destroy`/`delete_all` wiring + `Sessions.forget(user)` helper that also nulls identity on retained failure rows.
+7. **Bounded retention**: trail default 12 months (CNIL 6–12), purge job generated and scheduled; live registry rows end with their sessions, then retention/account-erasure cleanup can remove them. Right-to-erasure: `dependent: :destroy`/`delete_all` wiring + `Sessions.forget(user)` helper that also nulls identity on retained failure rows.
 8. **Optional hardening**: `config.ip_mode = :truncated` (GA precedent: zero last IPv4 octet / last 80 v6 bits, applied *before* persistence); AR-encryption recipe (`encrypts :ip_address, deterministic: true` — deterministic needed for equality queries, tradeoff documented per the Rails guide; non-deterministic for `user_agent`); lat/lng precision reduction default-on (→ research/09 §Privacy).
 9. **No client-side fingerprinting, ever** — scope guardrail (WP224: consent-gated under ePrivacy 5(3)). Server-observed UA + IP only — the GitLab/Mastodon/Discourse line (→ research/09 §Fraud).
 10. **Timeout enforcement is opt-in** — a tracking gem must not silently shorten anyone's sessions; presets (`:nist_aal2` etc.) make opting in one line. Defaults documented loudly. The 20-year omakase cookie means *our* sweep is the only expiry most apps will have — the README says so.
@@ -577,7 +577,7 @@ Requirements:
 - **Structure**: `Rails::Engine` with `isolate_namespace Sessions`; spine files `require_relative`'d; models/jobs under `lib/sessions/{models,jobs}` wired into the host Zeitwerk loader (`push_dir`/`collapse`/`ignore` before `:set_autoload_paths` — moderate/chats pattern). Never defines a top-level `Session` constant in the gem itself (→ research/02 §1, research/03 §Implications 7).
 - **Dependencies**: `activerecord`/`activesupport`/`actionpack`/`railties >= 7.1, < 9.0` (Rails-8-first, 7.1 floor is cheap per moderate/chats); `browser >= 6` (hard); everything else soft (`trackdown`, `device_detector`, Devise/Warden, OmniAuth). Ruby `>= 3.2`. MIT. `rubygems_mfa_required`. Authors/email per house gemspec (→ research/02 §1).
 - **Errors**: `Sessions::Error < StandardError`, `Sessions::ConfigurationError`, `Sessions::UnknownAuthSystemError` (generator-time).
-- **DB support**: PostgreSQL, MySQL, SQLite via portable column types + adaptive migration (uuid/bigint, jsonb/json, optional `:inet` upgrade on PG). Both CarHey and LicenseSeat are uuid-PK Postgres apps; dummy apps test bigint+SQLite too.
+- **DB support**: PostgreSQL, MySQL, SQLite via portable column types + adaptive migration (uuid/bigint, jsonb/json, optional `:inet` upgrade on PG). Both HostApp and LicenseSeat are uuid-PK Postgres apps; dummy apps test bigint+SQLite too.
 
 ## 14. Testing & quality strategy
 
@@ -591,7 +591,7 @@ Requirements:
 ## 15. Rollout plan
 
 1. **Phase 0 — Gem core** (this repo): registry + trail + both adapters + device intel + UI, built TDD against the two dummy apps. README written early in the house formula (emoji title → candy example → quickstart → deep dives → "what it doesn't do" → "why the models").
-2. **Phase 1 — Incubate in CarHey** (Devise 5 + native + Cloudflare + Spanish): point Gemfile at the sibling checkout (`moderate` precedent); wire `config.events → AuditLog`, goodmail new-device recipe, madmin resources; "Sesiones y dispositivos" section in `/settings`; native UA-prefix snippets into carhey-ios/android. Validates: Warden adapter, manual-branch failure seam, remember-me revocation, CF geo, native parsing, i18n.
+2. **Phase 1 — Incubate in HostApp** (Devise 5 + native + Cloudflare + Spanish): point Gemfile at the sibling checkout (`moderate` precedent); wire `config.events → AuditLog`, goodmail new-device recipe, madmin resources; "Sesiones y dispositivos" section in `/settings`; native UA-prefix snippets into hostapp-ios/android. Validates: Warden adapter, manual-branch failure seam, remember-me revocation, CF geo, native parsing, i18n.
 3. **Phase 2 — Validate in LicenseSeat** (Devise 4.9, MaxMind, api_keys, English): validates devise 4.x, MaxMind async geo, token-auth exclusion, `settings` namespace UI fit.
 4. **Phase 3 — Omakase proof**: a RailsFast-adjacent demo app on `rails g authentication` (zero-touch story, screenshots for README/launch post).
 5. **Phase 4 — Extract & launch**: cut 0.1.0 → rubygems; launch content timed to the ecosystem calendar: Planet Argon 2026 survey results land **July 2026** (fresh auth-share data to cite) and **Rails World Austin is 2026-09-23/24** (→ research/08 §Implications 6).
@@ -619,14 +619,14 @@ Requirements:
 6. **`Sessions::Event` vs `Sessions::Login` naming** for the trail model (events include logouts/revocations — `Event` recommended). Confirm.
 7. **Reserve the gem name now?** Push a 0.0.1 stub to RubyGems this week to lock `sessions` (and optionally `sessionable`/`login_activity` as redirect-stubs? — probably unnecessary). Recommended: yes, immediately.
 8. **Sudo mode**: ship only the `require_reauthentication` hook (recommended for v1) or build a first-party password-confirm flow (auth-zero-style `sudo_at` on the session row is cheap and we have the column budget — could be the v1.x headline)?
-9. **Scope of `signup` enrichment**: CarHey's 22 `signup_*` columns overlap heavily with what every session row now carries. Should the gem also expose a `Sessions.attribution_for(user)` (first-session) helper so CarHey can eventually drop SignupAttribution, or is that CarHey's own cleanup later?
+9. **Scope of `signup` enrichment**: HostApp's 22 `signup_*` columns overlap heavily with what every session row now carries. Should the gem also expose a `Sessions.attribution_for(user)` (first-session) helper so HostApp can eventually drop SignupAttribution, or is that HostApp's own cleanup later?
 10. **License/positioning detail**: any appetite for a paid `sessions_pro` tier later (impossible travel, org dashboards)? Affects how much fraud tooling lands in the open core roadmap.
 
 ## 18. Research appendix
 
 | Memo | Covers |
 |---|---|
-| [research/01-carhey.md](research/01-carhey.md) | CarHey + LicenseSeat audit: Devise setup, native UA/header contracts, AuditLog pattern, trackdown modes, UI conventions, gaps |
+| [research/01-host-app.md](research/01-host-app.md) | HostApp + LicenseSeat audit: Devise setup, native UA/header contracts, AuditLog pattern, trackdown modes, UI conventions, gaps |
 | [research/02-ecosystem.md](research/02-ecosystem.md) | rameerez house style: macros, config, generators, hooks, UI shipping, trackdown/footprinted deep dives |
 | [research/03-rails-core.md](research/03-rails-core.md) | Rails 8.1.3 + main auth generator internals, verbatim templates, supporting APIs, integration points |
 | [research/04-devise-warden.md](research/04-devise-warden.md) | Warden hook ABI, Devise sign-in flow, session_limitable revocation template, edge cases, Devise 2026 state |
@@ -661,12 +661,12 @@ So "existing projects already solve all the needs" is false — but "authtrail a
 
 **The bear case, stated plainly:**
 
-1. **This is a vitamin, not a painkiller, for most apps.** Sessions pages are security hygiene — rarely visited, never revenue. Unlike `usage_credits` or `pricing_plans` (which touch money), nobody's launch is blocked on this. Demand concentrates in serious production apps: B2B SaaS facing SOC2/ASVS checklists, consumer apps fighting fraud/ATO (CarHey's exact case), and anyone selling upmarket. Hobby apps will skip it.
+1. **This is a vitamin, not a painkiller, for most apps.** Sessions pages are security hygiene — rarely visited, never revenue. Unlike `usage_credits` or `pricing_plans` (which touch money), nobody's launch is blocked on this. Demand concentrates in serious production apps: B2B SaaS facing SOC2/ASVS checklists, consumer apps fighting fraud/ATO (HostApp's exact case), and anyone selling upmarket. Hobby apps will skip it.
 2. **The ceiling is authtrail-magnitude, not Devise-magnitude.** Millions of downloads over years, not hundreds of millions. That's a successful rameerez gem, not a breakout — *unless* distribution changes the math (shipping it default-on in RailsFast, where a devices page becomes a template selling point, is genuinely your unfair advantage).
-3. **Part of the value is thin on Rails 8.** "Sign out everywhere" is literally `user.sessions.destroy_all` there. On omakase our value is breadth and polish (failure capture has no hook, touch has write-amplification traps, retention/GDPR, native parsing), not capability. On Devise the value is capability. The technical moat is Devise; the marketing wedge is Rails 8.
+3. **Part of the value is thinner on Rails 8 than Devise.** Rails has a first-party session row and signed cookie; on omakase our value is breadth and polish (failure capture has no hook, touch has write-amplification traps, lifecycle state, retention/GDPR, native parsing), not inventing the primitive. On Devise the value is capability. The technical moat is Devise; the marketing wedge is Rails 8.
 4. **Teams who want zero effort already have an answer: hosted auth** (Clerk/WorkOS sell session management as a feature). Our market is specifically the own-your-auth majority that the Rails 8 wave is actively growing — which is the right side of the trend, but it's a real boundary.
 
-**What makes me land on "build it" despite all that:** the validation isn't vibes — Laravel and Phoenix ship this *by default*, OWASP ASVS makes it a literal L2 requirement, GitLab/Mastodon/Discourse each pay ongoing maintenance on hand-rolled versions, and authtrail proves people install adjacent tooling at scale while leaving the harder 70% of the feature unserved. And your economics are unusually favorable: **CarHey needs this regardless** (it currently has unrevocable 1-year native remember-me cookies and zero login history — a genuine security gap), so the incubation cost is sunk; gem-ifying is marginal cost on top.
+**What makes me land on "build it" despite all that:** the validation isn't vibes — Laravel and Phoenix ship this *by default*, OWASP ASVS makes it a literal L2 requirement, GitLab/Mastodon/Discourse each pay ongoing maintenance on hand-rolled versions, and authtrail proves people install adjacent tooling at scale while leaving the harder 70% of the feature unserved. And your economics are unusually favorable: **HostApp needs this regardless** (it currently has unrevocable 1-year native remember-me cookies and zero login history — a genuine security gap), so the incubation cost is sunk; gem-ifying is marginal cost on top.
 
 If I had to bet: solid, durable, "obvious in retrospect" ecosystem gem with authtrail-or-better adoption — not a rocket. The two things that would most change the odds upward: RailsFast default inclusion, and nailing the 60-second zero-config demo on a fresh Rails 8 app. The one thing that would kill it: scope creep into auth itself.
 
@@ -700,19 +700,19 @@ If I compress it to one sentence: **be the obvious answer in every fresh Rails 8
 
 ## Do we provide views? Do we provide an engine? How does this all work, exactly?
 
-Both — it's a four-layer stack where each layer is optional and built on the one below. This is the synthesis of how your own gems already do it (chats = engine + ejection, moderate = primitives + BYOUI, api_keys = mounted dashboard, profitable = authenticated mount), picked per layer for this gem's reality: CarHey wants Spanish `setting_row` sections inside its existing settings page, LicenseSeat wants a page in its `settings` namespace — so one fixed page can't be the only offering (→ research/01 §5).
+Both — it's a four-layer stack where each layer is optional and built on the one below. This is the synthesis of how your own gems already do it (chats = engine + ejection, moderate = primitives + BYOUI, api_keys = mounted dashboard, profitable = authenticated mount), picked per layer for this gem's reality: HostApp wants Spanish `setting_row` sections inside its existing settings page, LicenseSeat wants a page in its `settings` namespace — so one fixed page can't be the only offering (→ research/01 §5).
 
 **Layer 0 — Model API, no UI at all.** Everything works headless: `user.sessions.active`, `session.device_name`, `session.revoke!`, `Sessions::Event` scopes. A host can build 100% custom UI in ~20 lines of their own controller. This layer is the contract; everything above is convenience.
 
 **Layer 1 — Partials, renderable inside the host's own pages.** Rails automatically appends every engine's `app/views` to the host's view lookup path, so the gem ships partials that any host view can render directly with locals:
 
 ```erb
-<%# inside CarHey's app/views/settings/show.html.erb, in its own <section> %>
+<%# inside HostApp's app/views/settings/show.html.erb, in its own <section> %>
 <%= render "sessions/devices", user: current_user %>
 <%= render "sessions/history", user: current_user, limit: 10 %>
 ```
 
-No mount, no routes from us — the revoke buttons are `button_to`s pointing at engine routes *or* host-provided routes (configurable URL helper, so CarHey can route revocation through its own controller if it wants). This is the layer CarHey actually uses.
+No mount, no routes from us — the revoke buttons are `button_to`s pointing at engine routes *or* host-provided routes (configurable URL helper, so HostApp can route revocation through its own controller if it wants). This is the layer HostApp actually uses.
 
 **Layer 2 — The mounted engine (the README headline).** A complete drop-in page for apps that just want it done:
 
@@ -736,7 +736,7 @@ Mechanics, exactly:
 
 **Layer 3 — Ejection, exactly Devise/chats-style.** `rails g sessions:views` copies the engine's views into `app/views/sessions/` — and because application view paths take precedence over engine view paths, the copies shadow the gem's automatically. Edit freely; gem updates never touch them (the documented tradeoff, same as `devise:views`). Controllers stay ours and deliberately trivial — if you need custom controller behavior, you've graduated to Layer 0/1 rather than us supporting a controller-override matrix (Devise's `scoped_views`/custom-controllers surface is a maintenance tarpit we're explicitly not replicating).
 
-**Admin is *not* a layer** — that stays primitives + recipes (moderate's posture): `Sessions::Event` scopes plus the `sessions:madmin` generator producing resource files modeled on CarHey's `audit_log_resource.rb`. No shipped admin UI; admin frameworks vary too much and madmin/Avo/Administrate all want to own that surface.
+**Admin is *not* a layer** — that stays primitives + recipes (moderate's posture): `Sessions::Event` scopes plus the `sessions:madmin` generator producing resource files modeled on HostApp's `audit_log_resource.rb`. No shipped admin UI; admin frameworks vary too much and madmin/Avo/Administrate all want to own that surface.
 
 So the gem tree looks like: `app/views/sessions/` (partials + engine pages), `app/controllers/sessions/` (two small controllers), `config/routes.rb` (engine routes), `lib/sessions/models/` (Zeitwerk-wired models), `lib/generators/sessions/{install,views,madmin}`. The README leads with Layer 2 (the 60-second demo needs the mount), then immediately shows Layer 1 ("or render it inside your own settings page") — because that's the path both of your production apps will actually take.
 

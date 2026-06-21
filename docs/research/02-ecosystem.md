@@ -3,7 +3,7 @@
 Research memo for the `sessions` gem (drop-in session & login-activity tracking, device management, Rails 8+).
 Sources: read-only study of 10 local repos — `trackdown`, `footprinted` (deep dives), `usage_credits`,
 `pricing_plans`, `api_keys`, `nondisposable`, `profitable`, `wallets` (mature, trust most), `moderate`, `chats`
-(newer, best for UI-shipping + host hooks). All 10 repos present. Citations are `path:line` under `/Users/javi/GitHub/`.
+(newer, best for UI-shipping + host hooks). All 10 repos present. Citations are `path:line` under `/path/to/repos/`.
 
 ## Top findings
 

@@ -14,7 +14,7 @@ And it's built for how people actually sign in now: password, OAuth (Google, App
 ## 👨‍💻 Example
 
 ```ruby
-current_user.sessions.active          # every live device, most recent first
+current_user.sessions.live            # every live device, most recent first
 
 session = current_user.sessions.first
 session.device_name                   # => "Chrome 137 on macOS"
@@ -105,14 +105,14 @@ rails generate sessions:upgrade
 rails db:migrate
 ```
 
-This adds `sessions.adoption_key` (for installs before 0.1.2), the portable unique guard that makes pre-gem session adoption atomic under concurrent native-app request bursts, and `sessions_events.app_build` (for installs before 0.1.3), which keeps the event trail and generated madmin resource in sync. Fresh installs already get both from `sessions:install`.
+This adds `sessions.adoption_key` (for installs before 0.1.2), `sessions_events.app_build` (for installs before 0.1.3), and the 0.2 lifecycle columns (`sessions.ended_at`, `ended_reason`, `ended_by`, `ended_metadata`). Fresh installs already get all of them from `sessions:install`.
 
 ## What `sessions` does (and doesn't) do
 
 **Does:**
 
 - **Live device registry** — one row per signed-in device on the (Rails-8-shaped) `sessions` table, enriched with parsed device intelligence, geolocation, auth method, and a throttled `last_seen_at`.
-- **Remote revocation that actually works** — destroy the row, and that device is logged out on its very next request, on both auth stacks. Revoking a Devise session also rotates remember-me credentials so a stolen long-lived cookie can't quietly revive it.
+- **Remote revocation that actually works** — mark the row ended, and that device is logged out on its very next matching request, on both auth stacks. Revoking a Devise session also rotates remember-me credentials so a stolen long-lived cookie can't quietly revive it.
 - **Append-only login trail** — logins, *failed* logins (with the typed identity, even for accounts that don't exist), logouts, revocations, expirations. Each trail row links to the live session it created: a suspicious login is one lookup away from the kill switch.
 - **Every 2026 login method** — password and OAuth classify automatically (OmniAuth failures get captured too, via a composed `on_failure`); One Tap / passkeys / magic links / SSO take one `Sessions.tag` line.
 - **Hotwire Native device intelligence** — platform, OS version, and (on Android) device model work with zero setup; add the [UA prefix convention](#-hotwire-native) for app versions and iOS hardware models.
@@ -305,7 +305,7 @@ config.on_new_device = ->(user:, session:, event:) do
 end
 ```
 
-Pass the **event** to your mailer, not the session: the event is a persisted, GlobalID-able record that survives revocation (the session row may already be destroyed by the time an async job runs), and it carries everything the email needs — `event.user`, `event.device_name`, `event.location`, `event.country_flag`, `event.source_line`, `event.occurred_at`:
+Pass the **event** to your mailer, not the session: the event is a persisted, GlobalID-able record that survives revocation and account-erasure cleanup, and it carries everything the email needs — `event.user`, `event.device_name`, `event.location`, `event.country_flag`, `event.source_line`, `event.occurred_at`:
 
 ```ruby
 class SecurityMailer < ApplicationMailer
@@ -353,7 +353,7 @@ Scopes are the admin product — `Sessions::Event.failed_logins.last_24_hours.gr
 rails generate sessions:madmin
 ```
 
-…generates the two resources (the live registry with a per-row **Revoke session** action, and the login trail with its triage scopes as filters) plus their controllers, with madmin's two namespacing footguns pre-solved. The generated files use only stock madmin APIs and are yours to restyle. For a per-user security panel (devices + trail on the user's show page), load `user.sessions.by_recency` and `user.session_events.recent` in a member action — including the user's *failed* attempts by matching `Sessions::Event.where(identity: Sessions::Event.normalize_identity(user.email))` (failures never link to accounts; matching the signed-in user's own identity is the safe way to show them).
+…generates the two resources (the lifecycle registry with a per-row **Revoke session** action, and the login trail with its triage scopes as filters) plus their controllers, with madmin's two namespacing footguns pre-solved. The generated files use only stock madmin APIs and are yours to restyle. For a per-user security panel (devices + trail on the user's show page), load `user.sessions.live.by_recency` and `user.session_events.recent` in a member action — including the user's *failed* attempts by matching `Sessions::Event.where(identity: Sessions::Event.normalize_identity(user.email))` (failures never link to accounts; matching the signed-in user's own identity is the safe way to show them).
 
 ## 🧹 Retention & the sweep
 
@@ -372,7 +372,7 @@ It purges trail rows past `config.events_retention` (12 months by default — CN
 ## 🔏 Security & privacy posture
 
 - **Tracking never breaks login.** Every adapter path, parser, geo lookup and hook is error-isolated; the test suite includes a chaos test that detonates every pipeline stage at once and asserts sign-in still works.
-- **Tracking outages fail OPEN.** A revoked session is a row that's *gone*; an *errored* lookup (sessions table unreachable, a migration mid-deploy, a timeout) is an outage — the request proceeds untracked instead of logging anyone out. Kicks are scope-precise, too: revoking a user session never touches an admin scope riding the same rack session, or your cart/locale data.
+- **Tracking outages fail OPEN.** A revoked session is a row with an explicit lifecycle end (`ended_reason`); an *errored* lookup (sessions table unreachable, a migration mid-deploy, a timeout) is an outage — the request proceeds untracked instead of logging anyone out. Kicks are scope-precise, too: revoking a user session never touches an admin scope riding the same rack session, or your cart/locale data.
 - **The trail rejects rewrites.** Normal Active Record mutations on events are blocked — `update`/`destroy` raise `ActiveRecord::ReadOnlyRecord`. The callback-bypassing APIs (`update_columns`, `delete_all`) remain available, because the gem's own sanctioned paths use them: async geo backfill, `Sessions.forget`'s GDPR scrub, the retention sweep. Append-only at the model-contract level — not a database constraint, and a host determined to rewrite history still can.
 - **No usable credential is ever persisted.** Devise-mode session tokens are random 32-byte values stored as SHA-256 digests; the raw token lives only in the user's own session. Rails-8-mode rows store nothing secret (the signed cookie is the credential). Nothing secret is ever logged.
 - **Revocation is server-side and immediate** (checked on the very next request, both stacks) — OWASP ASVS 7.4.1; "view and terminate any or all currently active sessions" is literally ASVS 3.3.4 / 7.5.2, the requirement this gem exists to satisfy.

@@ -7,7 +7,7 @@ require "test_helper"
 # the current user resolves through ::Current).
 class EngineUiTest < ActionDispatch::IntegrationTest
   setup do
-    @user = User.create!(email_address: "javi@example.com", password: "s3kr1t-pass")
+    @user = User.create!(email_address: "user@example.test", password: "s3kr1t-pass")
   end
 
   teardown do
@@ -48,7 +48,7 @@ class EngineUiTest < ActionDispatch::IntegrationTest
     delete "/settings/sessions/#{other.id}"
 
     assert_response :see_other
-    refute Session.exists?(other.id)
+    assert_equal "user_revoked", other.reload.ended_reason
   end
 
   test "a redirecting sudo gate owns the response and blocks the action" do
@@ -93,7 +93,7 @@ class EngineUiTest < ActionDispatch::IntegrationTest
     delete "/settings/sessions/#{other.id}"
 
     assert_redirected_to "/settings/sessions/"
-    refute Session.exists?(other.id)
+    assert_equal "user_revoked", other.reload.ended_reason
     event = Sessions::Event.revocations.sole
     assert_equal "user_revoked", event.revoked_reason
   end
@@ -127,13 +127,13 @@ class EngineUiTest < ActionDispatch::IntegrationTest
     delete "/settings/sessions/others"
 
     assert_redirected_to "/settings/sessions/"
-    assert_equal [current.id], @user.sessions.pluck(:id)
+    assert_equal [current.id], @user.sessions.live.pluck(:id)
     assert_equal 2, Sessions::Event.revocations.where(revoked_reason: "logout_everywhere").count
   end
 
   test "the history page lists the trail, newest first" do
     sign_in!
-    Sessions::Event.record_failure(fake_request, identity: "javi@example.com", reason: :invalid)
+    Sessions::Event.record_failure(fake_request, identity: "user@example.test", reason: :invalid)
 
     get "/settings/sessions/history"
 

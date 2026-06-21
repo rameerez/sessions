@@ -106,7 +106,7 @@ class SessionsFacadeTest < ActiveSupport::TestCase
     assert_equal 1, counts[:expired]
     assert_equal 1, counts[:pruned] # 4 rows - 1 expired = 3 > cap of 2
     assert_operator counts[:purged_events], :>=, 1
-    assert_equal 2, user.sessions.count
+    assert_equal 2, user.sessions.live.count
     refute Sessions::Event.exists?(stale_event.id)
     assert Sessions::Event.exists?(fresh_event.id)
   end
@@ -125,15 +125,15 @@ class SessionsFacadeTest < ActiveSupport::TestCase
   end
 
   test "forget erases the user's sessions, trail, and typed identities" do
-    user = create_user(email: "javi@example.com")
+    user = create_user(email: "user@example.test")
     create_session_for(user)
-    Sessions::Event.record_failure(fake_request, identity: "javi@example.com", reason: :invalid)
+    Sessions::Event.record_failure(fake_request, identity: "user@example.test", reason: :invalid)
 
     Sessions.forget(user)
 
     assert_equal 0, user.sessions.count
     assert_equal 0, Sessions::Event.where(authenticatable: user).count
-    assert_equal 0, Sessions::Event.where(identity: "javi@example.com").count
+    assert_equal 0, Sessions::Event.where(identity: "user@example.test").count
   end
 
   test "safely isolates errors and warns instead of raising" do
