@@ -25,6 +25,8 @@ module Sessions
       def create_upgrade_migrations
         migration_template "add_adoption_key_to_sessions.rb.erb",
                            File.join(db_migrate_path, "add_sessions_adoption_key_to_#{table_name}.rb")
+        migration_template "add_app_build_to_sessions_events.rb.erb",
+                           File.join(db_migrate_path, "add_sessions_app_build_to_sessions_events.rb")
       end
 
       def display_post_upgrade_message
@@ -32,7 +34,7 @@ module Sessions
         say "\nTo complete the upgrade:"
         say "  1. Review the generated migration."
         say "  2. Run 'rails db:migrate'."
-        say "     ⚠️  Deploy the migration before relying on adoption hardening.", :yellow
+        say "     ⚠️  Deploy the migrations before relying on adoption hardening or app-build event columns.", :yellow
       end
 
       private

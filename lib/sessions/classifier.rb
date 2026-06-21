@@ -77,7 +77,7 @@ module Sessions
         from_omniauth(request) ||
         from_warden(request) ||
         from_google_sign_in(request) ||
-        from_password_post(request) ||
+        from_password_request(request) ||
         blank
     rescue StandardError => e
       Sessions.warn("auth classification failed: #{e.class}: #{e.message}")
@@ -176,10 +176,11 @@ module Sessions
       nil
     end
 
-    # A POST that exchanged a password for a session IS a password login —
-    # covers the omakase SessionsController and hand-rolled password forms.
-    def from_password_post(request)
-      return unless request.respond_to?(:post?) && request.post?
+    # A non-idempotent request that exchanged a password for a session IS a
+    # password login — covers the omakase SessionsController, hand-rolled
+    # password forms, and Devise password-reset PATCHes that sign the user in.
+    def from_password_request(request)
+      return unless credential_request?(request)
 
       params = request.params
       return unless params.is_a?(Hash) || params.respond_to?(:[])
@@ -188,6 +189,18 @@ module Sessions
       { method: "password", provider: nil, detail: {} }
     rescue StandardError
       nil
+    end
+
+    def credential_request?(request)
+      method = if request.respond_to?(:request_method)
+                 request.request_method
+               elsif request.respond_to?(:method)
+                 request.method
+               end
+
+      !%w[GET HEAD OPTIONS].include?(method.to_s.upcase)
+    rescue StandardError
+      false
     end
 
     def password_param?(params)

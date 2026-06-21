@@ -27,6 +27,11 @@ module Sessions
       # Key inside `warden.session(scope)` holding [row_id, raw_token].
       SESSION_KEY = "sessions"
 
+      # Rememberable can restore a user on background/native JSON requests
+      # before the browser/WebView has actually navigated. Defer the row
+      # until a document request can name the user-visible device.
+      PENDING_LOGIN_KEY = "sessions.pending_login"
+
       # Sticky per-scope flag: a login recorded with `sessions_skip: true`
       # must not be kicked by the fetch validation later (session_limitable's
       # third skip layer).
@@ -104,11 +109,23 @@ module Sessions
 
           next unless row_accepts?(record)
 
+          auth = Sessions::Classifier.classify(warden.request)
+          if deferred_login_request?(warden.request, auth)
+            stash_pending_login(warden, scope, auth)
+            next
+          end
+
+          if (row = remembered_existing_row(record, warden, scope, auth))
+            attach_existing_row(row, warden, scope)
+            next
+          end
+
+          warden.session(scope).delete(PENDING_LOGIN_KEY)
           create_row_for(record, warden, scope)
         end
       end
 
-      def create_row_for(record, warden, scope, suppress_login_event: false, attributes: {})
+      def create_row_for(record, warden, scope, suppress_login_event: false, skip_supersede: false, attributes: {})
         token = Sessions.generate_token
         request = warden.request
         model = Sessions.session_model
@@ -125,6 +142,7 @@ module Sessions
           end
         end
         row.sessions_suppress_login_event = suppress_login_event
+        row.sessions_skip_supersede = skip_supersede
         Sessions.with_request(request) { row.save! }
 
         warden.session(scope)[SESSION_KEY] = [row.id, token]
@@ -143,12 +161,20 @@ module Sessions
           session_data = warden.session(scope)
           next :skip if session_data[SKIP_SESSION_KEY]
 
-          session_data[SESSION_KEY]
+          {
+            login: session_data[SESSION_KEY],
+            pending_login: session_data[PENDING_LOGIN_KEY]
+          }
         end
         return if data == :skip
 
-        if data.nil?
-          adopt_preexisting_session(record, warden, scope)
+        session_token = data && data[:login]
+        if session_token.nil?
+          if data && data[:pending_login]
+            activate_pending_login(record, warden, scope, data[:pending_login])
+          else
+            adopt_preexisting_session(record, warden, scope)
+          end
           return
         end
 
@@ -160,9 +186,13 @@ module Sessions
         # never break authentication: fail OPEN, let the request through
         # untracked, try again next request.
         begin
-          id, token = data
+          id, token = session_token
           found = Sessions.session_model.find_by(id: id)
-          row = found if found&.sessions_token_matches?(token)
+          row = if found&.sessions_token_matches?(token)
+                  found
+                elsif token.nil? && existing_row_session?(found, record, scope, warden.request)
+                  found
+                end
         rescue StandardError => e
           Sessions.warn("warden.fetch failed open: #{e.class}: #{e.message}")
           return
@@ -190,6 +220,7 @@ module Sessions
       def adopt_preexisting_session(record, warden, scope)
         Sessions.safely("warden.adopt") do
           next unless row_accepts?(record)
+          next unless document_request?(warden.request)
 
           # IDEMPOTENT, because a client that can't persist cookies re-enters
           # adoption on EVERY request: the SESSION_KEY we write rides a
@@ -212,11 +243,141 @@ module Sessions
         end
       end
 
+      def activate_pending_login(record, warden, scope, pending_login)
+        Sessions.safely("warden.pending_login") do
+          next unless row_accepts?(record)
+          next unless document_request?(warden.request)
+
+          if (row = pending_existing_row(record, warden, scope, pending_login))
+            attach_existing_row(row, warden, scope)
+            warden.session(scope).delete(PENDING_LOGIN_KEY)
+            next row
+          end
+
+          row = create_row_for(record, warden, scope, attributes: pending_login_attributes(pending_login))
+          warden.session(scope).delete(PENDING_LOGIN_KEY)
+          row
+        end
+      end
+
+      def deferred_login_request?(request, auth)
+        remembered_login?(auth) && !document_request?(request)
+      end
+
+      def remembered_login?(auth)
+        detail = auth[:detail].to_h
+        detail["remembered"] || detail[:remembered]
+      rescue StandardError
+        false
+      end
+
+      def stash_pending_login(warden, scope, auth)
+        warden.session(scope)[PENDING_LOGIN_KEY] = login_auth_attributes(auth).transform_keys(&:to_s)
+      end
+
+      def login_auth_attributes(auth)
+        {
+          auth_method: auth[:method],
+          auth_provider: auth[:provider],
+          auth_detail: auth[:detail].presence
+        }.compact
+      end
+
+      def pending_login_attributes(attributes)
+        attributes.to_h.slice("auth_method", "auth_provider", "auth_detail")
+      rescue StandardError
+        {}
+      end
+
+      def pending_existing_row(record, warden, scope, pending_login)
+        auth = { detail: pending_login.to_h["auth_detail"] || {} }
+        remembered_existing_row(record, warden, scope, auth)
+      end
+
+      def remembered_existing_row(record, warden, scope, auth)
+        return unless remembered_login?(auth)
+
+        device_id = device_id_from_request(warden.request)
+        return if device_id.blank?
+
+        rows = Sessions.session_model.where(user: record, device_id: device_id)
+        rows = rows.where(scope: scope.to_s) if Sessions.session_model.column_names.include?("scope")
+        rows.order(created_at: :desc).first
+      rescue StandardError
+        nil
+      end
+
+      def attach_existing_row(row, warden, scope)
+        warden.session(scope)[SESSION_KEY] = [row.id, nil]
+        Sessions.safely("warden.remembered_existing.touch") { row.touch_last_seen!(warden.request) }
+        row
+      end
+
+      def existing_row_session?(row, record, scope, request)
+        return false unless row
+
+        device_id = device_id_from_request(request)
+        return false if device_id.blank?
+        return false unless row.try(:device_id) == device_id
+        return false unless row.user == record
+        return false if row.respond_to?(:scope) && row.scope.present? && row.scope != scope.to_s
+
+        true
+      rescue StandardError
+        false
+      end
+
+      def device_id_from_request(request)
+        return unless request.respond_to?(:cookie_jar)
+
+        request.cookie_jar.signed[Sessions::DEVICE_COOKIE].presence
+      rescue StandardError
+        nil
+      end
+
+      def document_request?(request)
+        return true unless request
+        return false if non_document_path?(request)
+
+        accept = request_header(request, "HTTP_ACCEPT").to_s
+        return true if accept.empty? || accept == "*/*"
+        return true if accept.match?(%r{\btext/html\b|\bapplication/xhtml\+xml\b|\btext/vnd\.turbo-stream\.html\b})
+        return false if accept.match?(%r{\b(?:application|text)/(?:[\w.+-]+\+)?json\b})
+        return false if request_header(request, "HTTP_X_REQUESTED_WITH").to_s.casecmp("XMLHttpRequest").zero?
+
+        if request.respond_to?(:format)
+          format = request.format
+          return true if format.respond_to?(:html?) && format.html?
+          return false if format.respond_to?(:json?) && format.json?
+        end
+
+        true
+      rescue StandardError
+        true
+      end
+
+      def non_document_path?(request)
+        path = if request.respond_to?(:path)
+                 request.path
+               elsif request.respond_to?(:path_info)
+                 request.path_info
+               end
+        File.extname(path.to_s).delete(".").casecmp("json").zero?
+      end
+
+      def request_header(request, key)
+        if request.respond_to?(:get_header)
+          request.get_header(key)
+        elsif request.respond_to?(:env)
+          request.env[key]
+        end
+      end
+
       def create_adopted_row(record, warden, scope, adoption_key:)
         attributes = { auth_detail: { "adopted" => true } }
         attributes[:adoption_key] = adoption_key if adoption_key_column?
 
-        create_row_for(record, warden, scope, suppress_login_event: true, attributes: attributes)
+        create_row_for(record, warden, scope, suppress_login_event: true, skip_supersede: true, attributes: attributes)
       rescue ActiveRecord::RecordNotUnique
         adopted_row(record, scope, adoption_key: adoption_key)&.tap do |row|
           Sessions.safely("warden.adopt.touch") { row.touch_last_seen!(warden.request) }

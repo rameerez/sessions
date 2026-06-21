@@ -98,14 +98,14 @@ That's it. Every sign-in from now on lands on the devices page and in the trail 
 
 ### Upgrading
 
-Existing apps upgrading from 0.1.0 or 0.1.1 should copy the upgrade migration and run it:
+Existing apps upgrading from 0.1.0, 0.1.1, or 0.1.2 should copy the upgrade migrations and run them:
 
 ```bash
 rails generate sessions:upgrade
 rails db:migrate
 ```
 
-This adds `sessions.adoption_key`, the portable unique guard that makes pre-gem session adoption atomic under concurrent native-app request bursts. Fresh installs already get it from `sessions:install`.
+This adds `sessions.adoption_key` (for installs before 0.1.2), the portable unique guard that makes pre-gem session adoption atomic under concurrent native-app request bursts, and `sessions_events.app_build` (for installs before 0.1.3), which keeps the event trail and generated madmin resource in sync. Fresh installs already get both from `sessions:install`.
 
 ## What `sessions` does (and doesn't) do
 

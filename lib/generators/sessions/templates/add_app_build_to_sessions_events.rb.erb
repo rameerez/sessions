@@ -1,0 +1,9 @@
+# frozen_string_literal: true
+
+# v0.1.3 upgrade: events mirror the registry's native app build so generated
+# madmin resources never reference a missing sessions_events.app_build column.
+class AddSessionsAppBuildToSessionsEvents < ActiveRecord::Migration<%= migration_version %>
+  def change
+    add_column :sessions_events, :app_build, :string unless column_exists?(:sessions_events, :app_build)
+  end
+end

@@ -79,13 +79,15 @@ module Sessions
 
     def columns_from(result)
       return {} unless result
-      return {} if result.country_code.to_s.empty?
+
+      country_code = location_value(result, :country_code)
+      return {} if country_code.to_s.empty?
 
       {
-        country_code: result.country_code,
-        country_name: presence(result.country_name),
-        city: presence(result.city),
-        region: presence(result.region)
+        country_code: country_code,
+        country_name: presence(location_value(result, :country_name)),
+        city: presence(location_value(result, :city)),
+        region: presence(location_value(result, :region))
       }.compact
     end
 
@@ -93,15 +95,23 @@ module Sessions
     # config.geo_precision (2 decimals ≈ 1km — privacy now,
     # impossible-travel math later).
     def coordinates_from(result)
-      return {} unless result.respond_to?(:latitude) && result.latitude
+      latitude = location_value(result, :latitude)
+      longitude = location_value(result, :longitude)
+      return {} if latitude.nil? || longitude.nil?
 
       precision = Sessions.config.geo_precision
       {
-        latitude: result.latitude.to_f.round(precision),
-        longitude: result.longitude.to_f.round(precision)
+        latitude: latitude.to_f.round(precision),
+        longitude: longitude.to_f.round(precision)
       }
     rescue StandardError
       {}
+    end
+
+    def location_value(result, attribute)
+      result.public_send(attribute) if result.respond_to?(attribute)
+    rescue StandardError
+      nil
     end
 
     def presence(value)

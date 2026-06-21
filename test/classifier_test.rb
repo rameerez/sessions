@@ -178,6 +178,14 @@ class ClassifierTest < ActiveSupport::TestCase
     assert_equal "password", Sessions::Classifier.classify(request)[:method]
   end
 
+  test "password-bearing PATCH requests classify as password for reset flows" do
+    request = fake_request(method: "PATCH", path: "/users/password",
+                           params: { user: { password: "new-secret" } },
+                           env: { "CONTENT_TYPE" => "application/x-www-form-urlencoded" })
+
+    assert_equal "password", Sessions::Classifier.classify(request)[:method]
+  end
+
   test "a plain GET classifies as unknown — never guess" do
     assert_equal "unknown", Sessions::Classifier.classify(fake_request)[:method]
   end

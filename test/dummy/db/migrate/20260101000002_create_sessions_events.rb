@@ -38,6 +38,7 @@ class CreateSessionsEvents < ActiveRecord::Migration[7.1]
       t.string :device_model
       t.string :app_name
       t.string :app_version
+      t.string :app_build
 
       t.string :country_code, limit: 2
       t.string :country_name

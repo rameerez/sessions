@@ -6,6 +6,7 @@ class GeolocationTest < ActiveSupport::TestCase
   # A stand-in for trackdown's LocationResult.
   FakeResult = Struct.new(:country_code, :country_name, :city, :region, :latitude, :longitude,
                           keyword_init: true)
+  LegacyResult = Struct.new(:country_code, :country_name, :city, keyword_init: true)
 
   MADRID = FakeResult.new(country_code: "ES", country_name: "Spain", city: "Madrid",
                           region: "Madrid", latitude: 40.4167754, longitude: -3.7037902)
@@ -42,6 +43,19 @@ class GeolocationTest < ActiveSupport::TestCase
       assert_equal "Spain", columns[:country_name]
       assert_equal "Madrid", columns[:city]
       refute columns.key?(:latitude)
+    end
+  end
+
+  test "locate tolerates older trackdown results without optional region fields" do
+    result = LegacyResult.new(country_code: "ES", country_name: "Spain", city: "Madrid")
+
+    with_fake_trackdown(result: result) do
+      columns = Sessions::Geolocation.locate("8.8.8.8")
+
+      assert_equal "ES", columns[:country_code]
+      assert_equal "Spain", columns[:country_name]
+      assert_equal "Madrid", columns[:city]
+      refute columns.key?(:region)
     end
   end
 

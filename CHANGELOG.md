@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3 (2026-06-21)
+
+Production-found hardening for Hotwire Native / Devise remember-me startup flows, plus compatibility and generated admin-schema fixes.
+
+- **Remembered Warden logins on non-document requests are deferred until the first document navigation.** A native iOS path-configuration fetch like `/native/configurations/ios/v1.json` can carry the remember-me cookie before the WebView entry page loads; the gem now keeps that login pending instead of recording a misleading `RailsFast/... CFNetwork/...` row/event, then records the real WebView/native device on the HTML request with the original `remembered` auth detail.
+- **Remembered restores for an already-live device now reattach to the existing row.** iOS WebView startup bursts can run several remembered document requests before the app settles; if the signed device cookie already names a live row for the same user/scope, the gem reuses it, writes no duplicate login event, and validates the tokenless Warden session against that same signed device cookie on later fetches. A destroyed row still kicks normally.
+- **Internal same-device superseding is quiet housekeeping again.** Replacing an abandoned same-browser row no longer writes a user-facing `revoked` / `superseded` event; remote revocations, password-change revocations, expiry and logout still write their normal trail entries.
+- **Pre-gem adoption also waits for a document request.** Existing authenticated sessions no longer get adopted from background JSON/native HTTP requests before the actual browser/WebView request can name the device.
+- **Trackdown integration duck-types optional fields.** `sessions` now tolerates older `trackdown` releases that do not expose `region` or coordinate methods, preserving valid country/city data instead of swallowing the whole geo result.
+- **`sessions_events.app_build` is now part of the trail schema.** Fresh installs get the column, login/logout/revocation events copy it from the registry row, and `rails generate sessions:upgrade` adds it for existing installs so the generated Madmin resource matches the database.
+- **Password-bearing non-idempotent requests classify as password logins.** This covers Devise password-reset/update flows that sign the user in with `PATCH` instead of `POST`, avoiding misleading `auth_method: "unknown"` rows.
+
 ## 0.1.2 (2026-06-16)
 
 Production-found hardening for Devise/Warden adoption, the path that turns already-authenticated pre-gem sessions into registry rows.

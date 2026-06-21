@@ -43,8 +43,8 @@ class DeviceDedupTest < ActionDispatch::IntegrationTest
 
     refute Session.exists?(zombie.id), "the zombie row was superseded"
     assert_equal 1, @user.sessions.count
-    event = Sessions::Event.revocations.find_by(session_id: zombie.id)
-    assert_equal "superseded", event.revoked_reason
+    assert_equal 0, Sessions::Event.revocations.where(revoked_reason: "superseded").count,
+                 "superseded rows are internal dedup bookkeeping, not security events"
   end
 
   test "a browser update changing the UA still dedupes (identity is the cookie)" do

@@ -36,6 +36,7 @@ class InstallGeneratorTest < Rails::Generators::TestCase
       assert_match(/t\.references :authenticatable, polymorphic: true/, migration)
       assert_match(/NO foreign key/, migration)
       assert_match(/t\.send\(session_id_column_type, :session_id\)/, migration)
+      assert_match(/t\.string :app_build/, migration)
     end
     assert_no_file "app/models/session.rb" # the host's own model stays the host's
     assert_file "config/initializers/sessions.rb", /Sessions\.configure/
@@ -243,6 +244,11 @@ class UpgradeGeneratorTest < Rails::Generators::TestCase
       assert_match(/add_column :sessions, :adoption_key, :string/, migration)
       assert_match(/add_index :sessions, :adoption_key, unique: true/, migration)
       assert_match(/column_exists\?\(:sessions, :adoption_key\)/, migration)
+    end
+
+    assert_migration "db/migrate/add_sessions_app_build_to_sessions_events.rb" do |migration|
+      assert_match(/add_column :sessions_events, :app_build, :string/, migration)
+      assert_match(/column_exists\?\(:sessions_events, :app_build\)/, migration)
     end
   end
 

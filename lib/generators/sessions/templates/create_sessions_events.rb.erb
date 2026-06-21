@@ -52,6 +52,7 @@ class CreateSessionsEvents < ActiveRecord::Migration<%= migration_version %>
       t.string :device_model
       t.string :app_name
       t.string :app_version
+      t.string :app_build
 
       # Geo via trackdown (soft dependency). lat/lng precision-reduced per
       # config.geo_precision (2 decimals ≈ 1km) — privacy now,

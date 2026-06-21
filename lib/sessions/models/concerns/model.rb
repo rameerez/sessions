@@ -57,7 +57,7 @@ module Sessions
 
       # Set on adopted rows (sessions that predate the gem) so adoption
       # doesn't fabricate a `login` event in the trail.
-      attr_accessor :sessions_suppress_login_event
+      attr_accessor :sessions_suppress_login_event, :sessions_skip_supersede
 
       before_create :sessions_enrich
       after_create_commit :sessions_record_login
@@ -335,22 +335,22 @@ module Sessions
 
     def sessions_record_login
       Sessions.safely("record_login") do
-        if sessions_suppress_login_event
-          # Suppressed writes (adoption) skip the trail event, dedup and
-          # the new-device hook — but never the cap: it's the hard limit on
-          # LIVE rows, and a misbehaving client looping through adoption
-          # must hit it like everyone else.
-          sessions_enforce_cap!
-          next
-        end
-
         # Same browser signing in again (abandoned session, expired
         # remember-me, browser update — anything) replaces its old row
         # instead of stacking a duplicate device. Runs BEFORE new-device
         # detection on purpose: the trail (which survives the superseded
         # row) is what remembers known devices, so dedup never causes
         # false "new device" alerts.
-        Sessions.safely("supersede") { sessions_supersede_previous_rows! }
+        Sessions.safely("supersede") { sessions_supersede_previous_rows! } unless sessions_skip_supersede
+
+        if sessions_suppress_login_event
+          # Suppressed writes skip the trail event and the new-device hook
+          # — but never the cap: it's the hard limit on LIVE rows, and a
+          # misbehaving client looping through adoption/remembered refreshes
+          # must hit it like everyone else.
+          sessions_enforce_cap!
+          next
+        end
 
         new_device = Sessions.safely("new_device") { sessions_new_device? } || false
 
@@ -401,9 +401,9 @@ module Sessions
     # The dedup half of browser continuity: prior live rows for the SAME
     # user on the SAME browser install are superseded by this login. A
     # quiet destroy on purpose — no on_session_revoked hook, no
-    # remember-me rotation (this is housekeeping, not a security event;
-    # the trail records it as revoked/:superseded). Scoped to the user:
-    # a shared computer with two accounts keeps both rows.
+    # remember-me rotation, no trail event (this is housekeeping, not a
+    # security event). Scoped to the user: a shared computer with two
+    # accounts keeps both rows.
     def sessions_supersede_previous_rows!
       return if try(:device_id).blank?
 
@@ -438,6 +438,8 @@ module Sessions
         next if user.nil? || user.destroyed?
 
         reason = revocation_reason&.to_sym
+        next if reason == :superseded
+
         event_name = case reason
                      when :logout then "logout"
                      when :expired then "expired"
@@ -483,6 +485,7 @@ module Sessions
         device_model: try(:device_model),
         app_name: try(:app_name),
         app_version: try(:app_version),
+        app_build: try(:app_build),
         country_code: try(:country_code),
         country_name: try(:country_name),
         city: try(:city),

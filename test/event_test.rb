@@ -21,6 +21,16 @@ class EventTest < ActiveSupport::TestCase
     assert event.persisted?
   end
 
+  test "login events mirror native app build from the registry row" do
+    user = create_user
+
+    row = create_session_for(user, ua: UserAgents::NATIVE_IOS)
+
+    event = Sessions::Event.logins.find_by!(session_id: row.id)
+    assert_respond_to event, :app_build
+    assert_equal "241", event.app_build
+  end
+
   test "record! never raises — a failing write is a lost row, not a broken login" do
     assert_nil Sessions::Event.record!(event: "not_a_real_event")
     assert_nil Sessions::Event.record!({})

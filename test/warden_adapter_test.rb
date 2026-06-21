@@ -63,6 +63,19 @@ class WardenAdapterTest < ActiveSupport::TestCase
   end
   Warden::Strategies.add(:test_passkey, PasskeyAuthenticatable)
 
+  # Devise rememberable shape: a non-password strategy restores the user
+  # from a long-lived cookie and marks the login as "remembered" by class
+  # name, exactly what Sessions::Classifier consumes.
+  class RememberableAuthenticatable < Warden::Strategies::Base
+    def valid? = env["HTTP_X_REMEMBERED_USER_EMAIL"].present?
+
+    def authenticate!
+      user = User.find_by(email_address: env["HTTP_X_REMEMBERED_USER_EMAIL"].to_s.downcase)
+      user ? success!(user) : fail!(:invalid)
+    end
+  end
+  Warden::Strategies.add(:test_rememberable, RememberableAuthenticatable)
+
   # devise-otp's TWO-PHASE shape: its replaced database_authenticatable
   # strategy `redirect!`s OTP-enabled users to a challenge INSTEAD of
   # calling success! — no warden sign-in, so no session may exist at the
@@ -135,6 +148,15 @@ class WardenAdapterTest < ActiveSupport::TestCase
     in ["GET", "/me"]
       warden.authenticate!(:test_password)
       [200, {}, ["me: #{warden.user.email_address}"]]
+    in ["GET", "/me.json"]
+      warden.authenticate!(:test_password)
+      [200, { "content-type" => "application/json" }, [%({"me":"#{warden.user.email_address}"})]]
+    in ["GET", "/native/configurations/ios/v1.json"]
+      warden.authenticate!(:test_rememberable)
+      [200, { "content-type" => "application/json" }, ['{"settings":{}}']]
+    in ["GET", "/native/entry"]
+      warden.authenticate!(:test_rememberable)
+      [200, { "content-type" => "text/html" }, ["native entry: #{warden.user.email_address}"]]
     in ["DELETE", "/logout"]
       warden.user # deserialize first, like Devise's sign_out helper does
       warden.logout
@@ -306,6 +328,76 @@ class WardenAdapterTest < ActiveSupport::TestCase
 
   # --- Hook 2: per-request validation + touch -------------------------------------
 
+  test "remembered native JSON bootstrap is deferred until the WebView document request" do
+    user = create_user
+
+    get "/native/configurations/ios/v1.json", {}, remembered_json_headers(user)
+    assert_equal 200, last_response.status
+    assert_equal 0, user.sessions.count
+    assert_equal 0, Sessions::Event.count
+
+    get "/native/configurations/ios/v1.json", {}, json_native_headers
+    assert_equal 200, last_response.status
+    assert_equal 0, user.sessions.count
+    assert_equal 0, Sessions::Event.count
+
+    get "/native/entry", {}, html_native_headers
+    assert_equal 200, last_response.status
+
+    row = user.sessions.sole
+    assert_equal UserAgents::NATIVE_IOS, row.user_agent
+    assert_equal "native_ios", row.device_type
+    assert_equal "password", row.auth_method
+    assert_equal({ "remembered" => true }, row.auth_detail)
+
+    event = Sessions::Event.logins.sole
+    assert_equal row.id, event.session_id
+    assert_equal "native_ios", event.device_type
+    assert_equal "password", event.auth_method
+    assert_equal({ "remembered" => true }, event.auth_detail)
+  end
+
+  test "remembered HTML requests still record the login immediately" do
+    user = create_user
+
+    get "/native/entry", {}, remembered_html_headers(user)
+
+    assert_equal 200, last_response.status
+    row = user.sessions.sole
+    assert_equal UserAgents::NATIVE_IOS, row.user_agent
+    assert_equal({ "remembered" => true }, row.auth_detail)
+    assert_equal 1, Sessions::Event.logins.count
+  end
+
+  test "remembered restores for an already-live device are quiet housekeeping" do
+    user = create_user
+    existing = user.sessions.build(
+      scope: "user",
+      ip_address: "203.0.113.7",
+      user_agent: UserAgents::NATIVE_IOS,
+      token_digest: Sessions.token_digest(Sessions.generate_token),
+      device_id: "device-1",
+      auth_method: "password",
+      auth_detail: { "remembered" => true }
+    )
+    existing.sessions_suppress_login_event = true
+    Sessions.with_request(fake_request(ua: UserAgents::NATIVE_IOS)) { existing.save! }
+    Sessions::Event.delete_all
+
+    Sessions::Adapters::Warden.stubs(:device_id_from_request).returns("device-1")
+    get "/native/entry", {}, remembered_html_headers(user)
+
+    assert_equal 200, last_response.status
+    assert Session.exists?(existing.id), "known-device remember-me restores reuse the live row"
+    assert_equal 1, user.sessions.count
+    assert_equal existing.id, user.sessions.sole.id
+    assert_equal 0, Sessions::Event.count, "remember-me refreshes for a known device are not user-visible events"
+
+    get "/me", {}, html_native_headers
+    assert_equal 200, last_response.status
+    assert_equal 1, user.sessions.count
+  end
+
   test "resuming a session validates the token and touches last_seen_at" do
     user = create_user
     login!(user)
@@ -421,6 +513,26 @@ class WardenAdapterTest < ActiveSupport::TestCase
     get "/me" # and the adopted session keeps working
     assert_equal 200, last_response.status
     assert_equal 1, user.sessions.count
+  end
+
+  test "pre-gem native JSON requests do not adopt until a document request names the device" do
+    user = create_user
+    post "/login", { "user" => { "email" => user.email_address, "password" => "s3kr1t-pass" } },
+         { "sessions.skip" => true }
+    frozen_cookie = last_response.headers["Set-Cookie"].to_s.split(";").first
+
+    clear_cookies
+    get "/me.json", {}, { "HTTP_COOKIE" => frozen_cookie }.merge(json_native_headers)
+    assert_equal 200, last_response.status
+    assert_equal 0, user.sessions.count
+
+    get "/me", {}, { "HTTP_COOKIE" => frozen_cookie }.merge(html_native_headers)
+    assert_equal 200, last_response.status
+
+    row = user.sessions.sole
+    assert_equal UserAgents::NATIVE_IOS, row.user_agent
+    assert_equal({ "adopted" => true }, row.auth_detail)
+    assert_equal 0, Sessions::Event.count
   end
 
   test "a client that drops Set-Cookie can't mint unbounded adopted rows" do
@@ -616,6 +728,30 @@ class WardenAdapterTest < ActiveSupport::TestCase
 
   def fake_warden(ua:)
     FakeWarden.new(fake_request(ua: ua), {})
+  end
+
+  CFNETWORK_IOS = "RailsFast/5 CFNetwork/3826.500.131 Darwin/24.5.0"
+
+  def remembered_json_headers(user)
+    json_native_headers.merge("HTTP_X_REMEMBERED_USER_EMAIL" => user.email_address)
+  end
+
+  def remembered_html_headers(user)
+    html_native_headers.merge("HTTP_X_REMEMBERED_USER_EMAIL" => user.email_address)
+  end
+
+  def json_native_headers
+    {
+      "HTTP_ACCEPT" => "application/json",
+      "HTTP_USER_AGENT" => CFNETWORK_IOS
+    }
+  end
+
+  def html_native_headers
+    {
+      "HTTP_ACCEPT" => "text/html,application/xhtml+xml",
+      "HTTP_USER_AGENT" => UserAgents::NATIVE_IOS
+    }
   end
 
   def create_adopted_row_for(user, ua:, created_at:)
