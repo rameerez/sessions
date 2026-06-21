@@ -85,20 +85,27 @@ module Sessions
       # tees the event into `config.events`. Returns the Event or nil —
       # never raises into a login.
       def record!(attributes)
-        Sessions.safely("event") do
-          event = new
-          attributes.each do |name, value|
-            next if value.nil?
+        Sessions.safely("event") { record_strict!(attributes) }
+      end
 
-            event.try(:"#{name}=", value)
-          end
-          event.identity = normalize_identity(event.try(:identity))
-          clamp_string_columns!(event)
-          event.save!
+      # Same tolerant attribute pipeline as `record!`, but persistence errors
+      # bubble. Explicit revocation relies on the end-event as a durable
+      # tombstone after the live row is deleted, so it must fail as a single
+      # transaction instead of silently creating a "row missing, no tombstone"
+      # shape that would fail open on the revoked device.
+      def record_strict!(attributes, notify: true)
+        event = new
+        attributes.each do |name, value|
+          next if value.nil?
 
-          Sessions.notify_event(event)
-          event
+          event.try(:"#{name}=", value)
         end
+        event.identity = normalize_identity(event.try(:identity))
+        clamp_string_columns!(event)
+        event.save!
+
+        Sessions.notify_event(event) if notify
+        event
       end
 
       # Clamp string columns to their limits BEFORE the insert: the

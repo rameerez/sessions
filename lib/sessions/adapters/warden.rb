@@ -528,7 +528,7 @@ module Sessions
       # logout came from a hook that logs out and throws (Devise's
       # activatable on unconfirmed/locked accounts, timeoutable) that loops:
       # activatable → logout → us → re-auth → activatable → … SystemStackError.
-      def record_logout(_record, warden, opts)
+      def record_logout(record, warden, opts)
         Sessions.safely("warden.logout") do
           scope = opts[:scope]
           data = warden.raw_session["warden.user.#{scope}.session"]&.dig(SESSION_KEY)
@@ -536,7 +536,11 @@ module Sessions
 
           id, token = data
           row = Sessions.session_model.find_by(id: id)
-          next unless row&.sessions_token_matches?(token)
+          next unless row
+
+          token_backed = row.sessions_token_matches?(token)
+          tokenless_known_device = token.blank? && existing_row_session?(row, record, scope, warden.request)
+          next unless token_backed || tokenless_known_device
 
           row.revocation_reason ||= :logout
           row.destroy

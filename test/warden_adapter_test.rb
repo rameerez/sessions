@@ -415,6 +415,34 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal 1, user.sessions.count
   end
 
+  test "logout from a tokenless known-device restore still ends the tracked row" do
+    user = create_user
+    existing = user.sessions.build(
+      scope: "user",
+      ip_address: "203.0.113.7",
+      user_agent: UserAgents::NATIVE_IOS,
+      token_digest: Sessions.token_digest(Sessions.generate_token),
+      device_id: "device-1",
+      auth_method: "password",
+      auth_detail: { "remembered" => true }
+    )
+    existing.sessions_suppress_login_event = true
+    Sessions.with_request(fake_request(ua: UserAgents::NATIVE_IOS)) { existing.save! }
+    Sessions::Event.delete_all
+
+    Sessions::Adapters::Warden.stubs(:device_id_from_request).returns("device-1")
+    get "/native/entry", {}, remembered_html_headers(user)
+    assert_equal existing.id, user.sessions.sole.id
+    assert_nil last_request.env["rack.session"]["warden.user.user.session"]["sessions"].second
+
+    delete "/logout"
+
+    assert_equal 200, last_response.status
+    assert_equal 0, user.sessions.count
+    assert_equal 1, Sessions::Event.logouts.count
+    assert_equal 0, Sessions::Event.revocations.count
+  end
+
   test "resuming a session validates the token and touches last_seen_at" do
     user = create_user
     login!(user)

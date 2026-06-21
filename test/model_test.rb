@@ -203,6 +203,16 @@ class ModelTest < ActiveSupport::TestCase
     assert_equal row.id, event.session_id
   end
 
+  test "revoke! keeps the live row when the durable tombstone cannot be written" do
+    row = create_session_for(create_user)
+    Sessions::Event.stubs(:record_strict!).raises(ActiveRecord::StatementInvalid, "events table down")
+
+    assert_raises(ActiveRecord::StatementInvalid) { row.revoke!(reason: :admin_revoked) }
+
+    assert Session.exists?(row.id),
+           "explicit revocation must not create a missing-row/no-tombstone state that Warden must fail open"
+  end
+
   test "revoke! fires on_session_revoked with kwargs" do
     captured = nil
     Sessions.config.on_session_revoked = ->(session:, by:, reason:) { captured = [session, by, reason] }

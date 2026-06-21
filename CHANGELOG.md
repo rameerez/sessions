@@ -6,6 +6,8 @@ Auth-safety correction for the Hotwire Native / Devise remember-me hardening int
 
 - **Tracking can no longer turn quiet housekeeping into logout.** 0.1.3 correctly made same-device remember-me restores quiet, but it still treated a missing/mismatched tracking row as session liveness failure. That crossed the gem's own boundary: the registry decorates Devise/Rails auth, it does not own it. Warden fetch now kicks only when the missing row has an explicit `revoked` or `expired` tombstone event; quiet supersede, token mismatch, database lookup errors, and stale tracking keys fail open and clear only the gem's tracking key.
 - **Remembered Warden restores stay quiet.** Same-device remember-me restores still reattach to the existing row without a duplicate login event, preserving the 0.1.3 noise reduction. The tokenless `[row_id, nil]` value is now only a tracking hint: if the signed browser-continuity cookie matches, the row may be touched; if it does not, tracking is dropped for that request and Devise/Rails continue to own authentication.
+- **Explicit revocation is transactional.** `revoke!` now persists the `revoked`/`expired` tombstone in the same transaction that deletes the live row. If the tombstone cannot be written, the row is left alive and the explicit action fails loudly instead of producing the dangerous "row missing, no tombstone" shape that Warden must fail open.
+- **Tokenless remembered restores still log out cleanly.** The quiet known-device hint introduced in 0.1.3 now participates in the Warden logout hook when the signed browser-continuity cookie still matches the row, so a user sign-out removes the device row and writes a `logout` event without needing a raw Warden token.
 
 ## 0.1.3 (2026-06-21)
 

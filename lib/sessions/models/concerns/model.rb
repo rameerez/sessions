@@ -57,7 +57,8 @@ module Sessions
 
       # Set on adopted rows (sessions that predate the gem) so adoption
       # doesn't fabricate a `login` event in the trail.
-      attr_accessor :sessions_suppress_login_event, :sessions_skip_supersede
+      attr_accessor :sessions_suppress_login_event, :sessions_skip_supersede,
+                    :sessions_end_event_recorded
 
       before_create :sessions_enrich
       after_create_commit :sessions_record_login
@@ -145,7 +146,21 @@ module Sessions
     def revoke!(reason: :user_revoked, by: nil)
       self.revocation_reason = reason
       self.revoked_by = by
-      destroy!
+
+      event = nil
+      self.class.transaction do
+        # In Warden/Devise mode the next request sees only the row id + token
+        # stored in the app session. Once this row is deleted, the end-event is
+        # the durable evidence that the missing row was an explicit revocation
+        # rather than quiet tracking housekeeping. Persist both changes
+        # atomically; if the tombstone cannot be written, leave the live row in
+        # place and let the caller surface the failed explicit action.
+        event = sessions_record_end_event!(notify: false)
+        self.sessions_end_event_recorded = true
+        destroy!
+      end
+
+      Sessions.notify_event(event) if event
 
       Sessions.safely("revoke_remember_me") { sessions_forget_remember_me! } if Sessions.config.revoke_remember_me
       Sessions.safely("on_session_revoked hook") do
@@ -432,28 +447,35 @@ module Sessions
     # --- after_destroy_commit: the end-of-session event ---------------------------
 
     def sessions_record_end
+      return if sessions_end_event_recorded
+
       Sessions.safely("record_end") do
         # Account deletion: dependent-destroyed rows of a destroyed owner
         # write no events (their trail is erased with them — GDPR default).
-        next if user.nil? || user.destroyed?
-
-        reason = revocation_reason&.to_sym
-        next if reason == :superseded
-
-        event_name = case reason
-                     when :logout then "logout"
-                     when :expired then "expired"
-                     else "revoked"
-                     end
-
-        Sessions::Event.record!(
-          sessions_event_identity_attributes.merge(
-            event: event_name,
-            revoked_reason: (event_name == "revoked" ? (reason || :unknown) : nil),
-            metadata: sessions_revoked_by_metadata
-          )
-        )
+        sessions_record_end_event!
       end
+    end
+
+    def sessions_record_end_event!(notify: true)
+      return if user.nil? || user.destroyed?
+
+      reason = revocation_reason&.to_sym
+      return if reason == :superseded
+
+      event_name = case reason
+                   when :logout then "logout"
+                   when :expired then "expired"
+                   else "revoked"
+                   end
+
+      Sessions::Event.record_strict!(
+        sessions_event_identity_attributes.merge(
+          event: event_name,
+          revoked_reason: (event_name == "revoked" ? (reason || :unknown) : nil),
+          metadata: sessions_revoked_by_metadata
+        ),
+        notify: notify
+      )
     end
 
     def sessions_revoked_by_metadata
