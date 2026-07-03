@@ -179,11 +179,14 @@ module Sessions
                 .count
         return unless count == config[:threshold]
 
+        user = Sessions.user_for_identity(event.identity, scope: event.scope)
+
         Sessions.safely("on_repeated_failed_logins hook") do
-          Sessions.config.on_repeated_failed_logins.call(
+          call_repeated_failed_logins_hook(
             identity: event.identity,
             count: count,
-            event: event
+            event: event,
+            user: user
           )
         end
       end
@@ -197,6 +200,17 @@ module Sessions
 
         normalized = identity.to_s.strip.downcase
         normalized.empty? ? nil : normalized
+      end
+
+      def call_repeated_failed_logins_hook(**kwargs)
+        hook = Sessions.config.on_repeated_failed_logins
+        return hook.call(**kwargs) unless hook.respond_to?(:parameters)
+        return hook.call(**kwargs) if hook.parameters.any? { |type, _name| type == :keyrest }
+
+        accepted = hook.parameters
+                       .select { |type, _name| %i[key keyreq].include?(type) }
+                       .filter_map { |_type, name| name }
+        hook.call(**kwargs.slice(*accepted))
       end
 
       def context_for(request)

@@ -112,7 +112,8 @@ module Sessions
     end
 
     def sessions_layout
-      Sessions.config.layout
+      configured = Sessions.config.layout
+      configured.respond_to?(:call) ? configured.call(self) : configured
     end
 
     # The optional sudo gate (ASVS 3.3.4's "having re-entered login

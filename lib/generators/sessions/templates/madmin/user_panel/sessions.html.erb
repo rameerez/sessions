@@ -1,0 +1,133 @@
+<% content_for :title, "Sessions - #{@user.try(:email) || @user.try(:email_address) || @user.id}" %>
+
+<div class="mx-auto w-full max-w-6xl px-4 py-6">
+  <header class="mb-6 flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <p class="text-sm text-gray-500">
+        <%= link_to "Users", madmin_users_path, class: "hover:text-gray-700" %>
+        <span class="mx-1 text-gray-400">/</span>
+        <%= link_to @user.try(:email) || @user.try(:email_address) || @user.id, madmin_user_path(@user), class: "hover:text-gray-700" %>
+      </p>
+      <h1 class="mt-1 text-2xl font-semibold text-gray-900">Sessions &amp; devices</h1>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <%= link_to "Back to user", madmin_user_path(@user),
+            class: "rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50" %>
+      <% if @sessions.any? %>
+        <%= button_to "Revoke all sessions", revoke_all_sessions_madmin_user_path(@user),
+              method: :post,
+              class: "rounded-md bg-white px-3 py-2 text-sm font-semibold text-red-700 shadow-sm ring-1 ring-inset ring-red-300 hover:bg-red-50",
+              data: { turbo_confirm: "Revoke ALL #{@sessions.size} sessions? Every device will be signed out on its next request." } %>
+      <% end %>
+    </div>
+  </header>
+
+  <div class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+    <div class="rounded-lg border border-gray-200 bg-white p-4">
+      <p class="text-xs font-medium uppercase text-gray-500">Live sessions</p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900"><%= @sessions.size %></p>
+    </div>
+    <div class="rounded-lg border border-gray-200 bg-white p-4">
+      <p class="text-xs font-medium uppercase text-gray-500">Last activity</p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900">
+        <% if (latest = @sessions.filter_map(&:last_active_at).max) %>
+          <%= time_ago_in_words(latest) %> ago
+        <% else %>
+          -
+        <% end %>
+      </p>
+    </div>
+    <div class="rounded-lg border border-gray-200 bg-white p-4">
+      <p class="text-xs font-medium uppercase text-gray-500">Failed logins (24h)</p>
+      <p class="mt-1 text-2xl font-semibold <%= @failed_last_24h.positive? ? "text-red-700" : "text-gray-900" %>">
+        <%= @failed_last_24h %>
+      </p>
+    </div>
+  </div>
+
+  <section class="mb-6 overflow-hidden rounded-lg border border-gray-200 bg-white">
+    <header class="border-b border-gray-200 px-6 py-4">
+      <h2 class="text-base font-semibold text-gray-900">Live devices</h2>
+    </header>
+
+    <% if @sessions.any? %>
+      <ul class="divide-y divide-gray-100">
+        <% @sessions.each do |session_row| %>
+          <li class="flex items-start justify-between gap-4 px-6 py-4">
+            <div class="min-w-0">
+              <p class="text-sm font-medium text-gray-900">
+                <%= link_to session_row.device_name, madmin_session_path(session_row), class: "hover:underline" %>
+              </p>
+              <p class="mt-1 text-xs text-gray-500">
+                <% bits = [] %>
+                <% bits << session_row.location if session_row.location %>
+                <% bits << "IP #{session_row.last_seen_ip || session_row.ip_address}" if session_row.last_seen_ip || session_row.ip_address %>
+                <% bits << "via #{session_row.auth_method_label}" if session_row.auth_method_label %>
+                <% bits << "last seen #{time_ago_in_words(session_row.last_active_at)} ago" if session_row.last_active_at %>
+                <%= bits.join(" - ") %>
+              </p>
+            </div>
+
+            <%= button_to "Revoke", revoke_madmin_session_path(session_row),
+                  method: :post,
+                  class: "rounded-md bg-white px-3 py-2 text-sm font-semibold text-red-700 shadow-sm ring-1 ring-inset ring-red-300 hover:bg-red-50",
+                  data: { turbo_confirm: "Revoke #{session_row.device_name}?" } %>
+          </li>
+        <% end %>
+      </ul>
+    <% else %>
+      <div class="px-6 py-10 text-center text-sm text-gray-500">No live sessions.</div>
+    <% end %>
+  </section>
+
+  <section class="overflow-hidden rounded-lg border border-gray-200 bg-white">
+    <header class="border-b border-gray-200 px-6 py-4">
+      <h2 class="text-base font-semibold text-gray-900">Login activity</h2>
+    </header>
+
+    <% if @events.any? %>
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <thead class="bg-gray-50 text-xs uppercase text-gray-500">
+            <tr>
+              <th class="px-4 py-2 text-left font-medium">When</th>
+              <th class="px-4 py-2 text-left font-medium">Event</th>
+              <th class="px-4 py-2 text-left font-medium">Device</th>
+              <th class="px-4 py-2 text-left font-medium">IP / Location</th>
+              <th class="px-4 py-2 text-left font-medium">Via</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% @events.each do |event| %>
+              <tr>
+                <td class="whitespace-nowrap px-4 py-3 align-top">
+                  <%= l(event.occurred_at, format: :short) %>
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <%= event.label %>
+                  <% if event.reason %>
+                    <div class="text-xs text-gray-500"><%= event.reason_label %></div>
+                  <% end %>
+                </td>
+                <td class="px-4 py-3 align-top"><%= event.device_name %></td>
+                <td class="whitespace-nowrap px-4 py-3 align-top">
+                  <%= [ event.ip_address, event.location ].compact.join(" - ").presence || "-" %>
+                </td>
+                <td class="px-4 py-3 align-top"><%= event.auth_method_label || "-" %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+
+      <% if defined?(@pagy) && @pagy.respond_to?(:last) && @pagy.last > 1 %>
+        <div class="border-t border-gray-100 bg-gray-50 px-6 py-3">
+          <%= render "madmin/shared/pagination", pagy: @pagy %>
+        </div>
+      <% end %>
+    <% else %>
+      <div class="px-6 py-10 text-center text-sm text-gray-500">No login activity.</div>
+    <% end %>
+  </section>
+</div>

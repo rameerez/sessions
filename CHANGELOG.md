@@ -8,6 +8,10 @@
 - Correct the 0.2 documentation for `event.session`: it resolves retained lifecycle rows after logout/revocation and becomes `nil` only after hard deletion.
 - Document that Devise's `bypass_sign_in` skips the Warden callbacks required to register a new session.
 - Bound the device parser dependency to the tested `browser` 6.x API line.
+- Let `config.layout` be a callable (`->(controller) { ... }`) for hosts that switch layouts between web and native shells.
+- Pass `user:` (resolved best-effort, never persisted on the failed event) to `on_repeated_failed_logins` when the hook opts into the keyword.
+- Add `sessions_devices_for(user)` / `sessions_history_for(user)` helpers so ejected/custom views keep live-device and enumeration-safe history semantics in one place.
+- Add `rails generate sessions:madmin --user-panel` for the repeated per-user admin security panel concern/view.
 
 ## 0.2.0 (2026-06-21)
 

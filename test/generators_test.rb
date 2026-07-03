@@ -308,6 +308,26 @@ class MadminGeneratorTest < Rails::Generators::TestCase
     assert_match(/namespace :sessions do/, output)
   end
 
+  test "--user-panel adds the reusable per-user Madmin panel files and instructions" do
+    Sessions::Generators::MadminGenerator.any_instance.stubs(:madmin_available?).returns(true)
+
+    output = run_generator %w[--user-panel]
+
+    assert_file "app/controllers/concerns/sessions/madmin_user_panel.rb" do |concern|
+      assert_match(/module Sessions/, concern)
+      assert_match(/module MadminUserPanel/, concern)
+      assert_match(/def sessions/, concern)
+      assert_match(/def revoke_all_sessions/, concern)
+      assert_match(/user\.session_history\.recent/, concern)
+    end
+    assert_file "app/views/madmin/users/sessions.html.erb" do |view|
+      assert_match(/Sessions &amp; devices/, view)
+      assert_match(/revoke_all_sessions_madmin_user_path/, view)
+    end
+    assert_match(/get :sessions/, output)
+    assert_match(/post :revoke_all_sessions/, output)
+  end
+
   test "aborts with guidance when madmin isn't in the bundle" do
     Sessions::Generators::MadminGenerator.any_instance.stubs(:madmin_available?).returns(false)
 

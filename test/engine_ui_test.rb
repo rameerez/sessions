@@ -29,6 +29,31 @@ class EngineUiTest < ActionDispatch::IntegrationTest
     assert_nil helper.sessions_format_time(nil)
   end
 
+  test "semantic helpers return live devices and enumeration-safe history" do
+    helper = Class.new { include Sessions::EngineHelper }.new
+    live = create_session_for(@user, ua: UserAgents::CHROME_MAC)
+    ended = create_session_for(@user, ua: UserAgents::FIREFOX_WINDOWS)
+    ended.end!(reason: :admin_revoked)
+    failure = Sessions::Event.record_failure(fake_request, identity: @user.email_address, reason: :invalid)
+
+    assert_equal [live.id], helper.sessions_devices_for(@user).pluck(:id)
+    assert_includes helper.sessions_history_for(@user), failure
+  end
+
+  test "the devices page accepts a callable layout resolver" do
+    seen_controller = nil
+    Sessions.config.layout = lambda do |controller|
+      seen_controller = controller.class.name
+      nil
+    end
+
+    sign_in!
+    get "/settings/sessions"
+
+    assert_response :success
+    assert_equal "Sessions::DevicesController", seen_controller
+  end
+
   test "the sudo gate fails CLOSED: a falsy gate blocks with 403" do
     Sessions.config.require_reauthentication = ->(_controller) { false }
     sign_in!

@@ -1,13 +1,13 @@
 <%# The live device registry — renderable from the engine OR straight from %>
 <%# any host view: render "sessions/devices", user: current_user           %>
 <%# Locals:                                                                 %>
-<%#   sessions:        the rows to render (defaults to user.sessions)       %>
+<%#   sessions:        the rows to render (defaults via sessions_devices_for)%>
 <%#   user:            whose devices (only needed when sessions: isn't given)%>
 <%#   current_session: the row serving this request (badged, not revocable) %>
 <%
   current_session = local_assigns[:current_session] || Sessions.current(request)
   sessions = local_assigns[:sessions] ||
-             local_assigns[:user]&.sessions&.live&.by_recency&.to_a ||
+             (sessions_devices_for(local_assigns[:user]).to_a if local_assigns[:user] && respond_to?(:sessions_devices_for)) ||
              []
   routes = sessions_engine_routes if respond_to?(:sessions_engine_routes)
 %>

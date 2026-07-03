@@ -181,7 +181,7 @@ module Sessions
     # whatever layout the parent controller resolves — usually the host's
     # `application` layout. Set it when your signed-in surfaces render with
     # a different one (e.g. "app").
-    attr_accessor :layout
+    attr_reader :layout
 
     # ->(controller) — optional sudo gate run before destructive actions on
     # the devices page (ASVS 3.3.4's "having re-entered login credentials").
@@ -375,6 +375,15 @@ module Sessions
       raise ConfigurationError, "parent_controller can't be blank" if name.strip.empty?
 
       @parent_controller = name
+    end
+
+    def layout=(value)
+      if value.nil? || value.respond_to?(:call) || value.is_a?(String) || value.is_a?(Symbol)
+        @layout = value
+        return
+      end
+
+      raise ConfigurationError, "layout must be a String, Symbol, callable, or nil, got #{value.inspect}"
     end
 
     def require_reauthentication=(value)

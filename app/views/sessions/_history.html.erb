@@ -1,12 +1,12 @@
 <%# The login-activity trail — renderable from any host view too:          %>
 <%#   render "sessions/history", user: current_user, limit: 10              %>
 <%# Locals:                                                                 %>
-<%#   events: the trail rows (defaults to user.session_events.recent)       %>
+<%#   events: the trail rows (defaults via sessions_history_for)            %>
 <%#   user:   whose history (only needed when events: isn't given)          %>
 <%#   limit:  cap when deriving from user (default 10)                      %>
 <%
   events = local_assigns[:events] ||
-           local_assigns[:user]&.session_events&.recent&.limit(local_assigns.fetch(:limit, 10)) ||
+           (sessions_history_for(local_assigns[:user], limit: local_assigns.fetch(:limit, 10)) if local_assigns[:user] && respond_to?(:sessions_history_for)) ||
            []
 %>
 <% if events.respond_to?(:empty?) && events.empty? %>

@@ -45,6 +45,29 @@ module Sessions
       EVENT_ICON_NAMES.fetch(event.event.to_s, "information-circle")
     end
 
+    # Semantic queries for custom/ejected views. Keep liveness and
+    # enumeration-safe history semantics in the gem, so host styling changes
+    # don't accidentally regress the data contract.
+    def sessions_devices_for(user, limit: nil)
+      scope = if user.respond_to?(:sessions)
+                user.sessions.live.by_recency
+              else
+                Sessions.session_model.live.where(user: user).by_recency
+              end
+      limit ? scope.limit(limit) : scope
+    end
+
+    def sessions_history_for(user, limit: nil)
+      scope = if user.respond_to?(:session_history)
+                user.session_history.recent
+              elsif user.respond_to?(:session_events)
+                user.session_events.recent
+              else
+                Sessions::Event.where(authenticatable: user).recent
+              end
+      limit ? scope.limit(limit) : scope
+    end
+
     # "Active now" within the touch window, else "Active 3 minutes ago".
     def sessions_last_active_in_words(session)
       # active_now? owns the window (config.touch_every) — the badge can't
