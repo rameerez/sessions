@@ -98,7 +98,7 @@ That's it. Every sign-in from now on lands on the devices page and in the trail 
 
 ### Upgrading
 
-Existing apps upgrading from 0.1.0, 0.1.1, or 0.1.2 should copy the upgrade migrations and run them:
+Existing apps upgrading from any 0.1.x release should copy the upgrade migrations and run them:
 
 ```bash
 rails generate sessions:upgrade
@@ -152,7 +152,7 @@ A hard rule the page enforces: **you can never touch a session you don't own** (
 ```ruby
 Sessions::Event.logins / .failed_logins / .logouts / .revocations / .expirations
 Sessions::Event.recent.last_days(90).for_ip("203.0.113.7")
-event.session       # the live row it created — nil once revoked (that's the point)
+event.session       # the lifecycle row it created (live or explicitly ended)
 event.new_device?   # flagged when the login matched no prior device
 ```
 
@@ -211,6 +211,8 @@ Sessions.record_failed_attempt(request, scope: :user, identity: params[:email],
 ```
 
 Custom Warden strategies map with `config.strategy_methods = { "OtpAuthenticatable" => :otp }`. Everything else is `unknown` — the gem never guesses.
+
+Devise's `bypass_sign_in` writes directly to its session serializer and deliberately skips Warden callbacks. Do not use it to establish a new login that must appear in the registry; use `sign_in` instead. It remains appropriate for refreshing the serialization of an already-tracked login.
 
 ### Two-factor flows (TOTP apps, security keys, Touch ID)
 

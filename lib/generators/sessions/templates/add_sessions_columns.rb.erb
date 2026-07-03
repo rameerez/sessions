@@ -70,7 +70,9 @@ class AddSessionsColumnsTo<%= table_name.camelize %> < ActiveRecord::Migration<%
       # truth for whether a session should still be accepted.
       t.datetime :ended_at
       t.string :ended_reason
-      t.references :ended_by, polymorphic: true, type: foreign_key_type
+      # The explicit index below keeps the generated name consistent across
+      # fresh installs and upgrades. Avoid the implicit duplicate index.
+      t.references :ended_by, polymorphic: true, type: foreign_key_type, index: false
       t.send(json_column_type, :ended_metadata)
     end
 

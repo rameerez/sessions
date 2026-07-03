@@ -23,10 +23,9 @@ class AddSessionsLifecycleTo<%= table_name.camelize %> < ActiveRecord::Migration
   def reference_column_type
     config = Rails.configuration.generators
     case config.options[config.orm][:primary_key_type]
-    when :uuid then :uuid
-    when :string then :string
-    when :integer, :serial then :integer
-    else :bigint
+    when nil, :bigserial then :bigint
+    when :serial then :integer
+    else config.options[config.orm][:primary_key_type]
     end
   end
 

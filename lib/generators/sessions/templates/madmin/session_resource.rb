@@ -2,8 +2,9 @@
 
 # Device lifecycle registry (sessions gem): one row = one signed-in device.
 # `ended_at: nil` is the live set that can act on your app right now; ended
-# rows stay around as durable state/audit context until retention or account
-# erasure removes them. The append-only history lives in Sessions::Event.
+# rows stay around as durable revocation state until account erasure or
+# explicit host cleanup removes them. The append-only history lives in
+# Sessions::Event.
 class SessionResource < Madmin::Resource
   model <%= session_class %>
 
@@ -65,10 +66,12 @@ class SessionResource < Madmin::Resource
   # attributed to the admin, and rotates the user's remember-me credentials
   # in Devise mode. The device is signed out on its next matching request.
   member_action do
-    button_to "Revoke session",
-      main_app.revoke_madmin_session_path(@record),
-      method: :post,
-      class: "rounded-md bg-white px-3 py-2 text-sm font-semibold text-red-700 shadow-sm ring-1 ring-inset ring-red-300 hover:bg-red-50",
-      data: { turbo_confirm: "Revoke this session? The device will be signed out on its next request." }
+    if @record.live?
+      button_to "Revoke session",
+        main_app.revoke_madmin_session_path(@record),
+        method: :post,
+        class: "rounded-md bg-white px-3 py-2 text-sm font-semibold text-red-700 shadow-sm ring-1 ring-inset ring-red-300 hover:bg-red-50",
+        data: { turbo_confirm: "Revoke this session? The device will be signed out on its next request." }
+    end
   end
 end

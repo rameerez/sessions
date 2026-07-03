@@ -186,6 +186,17 @@ class EventTest < ActiveSupport::TestCase
     assert_equal row.id, event.session_id
   end
 
+  test "session linkage resolves an explicitly ended lifecycle row" do
+    user = create_user
+    row = create_session_for(user)
+    event = Sessions::Event.logins.find_by!(session_id: row.id)
+
+    row.revoke!
+
+    assert_equal row, event.reload.session
+    assert event.session.ended?
+  end
+
   test "location and country_flag render from geo columns" do
     event = Sessions::Event.record!(event: "login", city: "Madrid", country_name: "Spain",
                                     country_code: "ES")

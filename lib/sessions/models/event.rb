@@ -221,8 +221,9 @@ module Sessions
       authenticatable
     end
 
-    # The live registry row this event points at — nil once it's been
-    # revoked/logged out (that's the point of the trail).
+    # The lifecycle registry row this event points at. In v0.2 an ended row
+    # remains available as explicit revocation state; nil means the host later
+    # hard-deleted it (for example during account erasure).
     def session
       return nil if session_id.nil?
 
