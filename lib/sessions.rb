@@ -94,6 +94,27 @@ module Sessions
       config.session_model
     end
 
+    # Resolve a typed login identity to an account for host hooks. Failed
+    # login events still do NOT persist an account link (enumeration safety);
+    # this is only an in-process convenience for notification hooks that are
+    # already allowed to know whether the account exists.
+    def user_for_identity(identity, scope: nil)
+      normalized = Sessions::Event.normalize_identity(identity)
+      return nil if normalized.blank?
+
+      safely("user_for_identity") do
+        model = user_model_for_identity(scope)
+        next nil unless model.respond_to?(:column_names)
+
+        column = %w[email email_address login username phone].find { |name| model.column_names.include?(name) }
+        next nil unless column
+
+        table = model.quoted_table_name
+        quoted_column = model.connection.quote_column_name(column)
+        model.where("LOWER(#{table}.#{quoted_column}) = ?", normalized).first
+      end
+    end
+
     # --- Request-side API -----------------------------------------------------
 
     # Label the login that's about to happen on this request — for flows
@@ -311,6 +332,20 @@ module Sessions
     end
 
     private
+
+    def user_model_for_identity(scope)
+      if scope && defined?(::Devise) && ::Devise.respond_to?(:mappings)
+        mapping = ::Devise.mappings[scope.to_sym] || ::Devise.mappings[scope.to_s]
+        return mapping.to if mapping.respond_to?(:to)
+      end
+
+      reflection = session_model.reflect_on_association(:user)
+      return nil if reflection&.polymorphic?
+
+      reflection&.klass
+    rescue StandardError
+      nil
+    end
 
     def omakase_current(_request)
       return nil unless defined?(::Current) && ::Current.respond_to?(:session)

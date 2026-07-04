@@ -136,11 +136,12 @@ Sessions.configure do |config|
   # end
   #
   # Someone crossed the repeated_failed_logins threshold (see BEHAVIOR
-  # above). The identity is the email AS TYPED — it may match no account,
-  # so resolve it yourself before notifying:
+  # above). The event still stores no account link for failures; user: is a
+  # best-effort in-memory resolution for this hook and nil for unknown
+  # identities:
   #
-  # config.on_repeated_failed_logins = ->(identity:, count:, event:) do
-  #   user = User.find_by(email: identity) or next
+  # config.on_repeated_failed_logins = ->(identity:, count:, event:, user:) do
+  #   next unless user
   #   SecurityMailer.with(user: user, event: event).repeated_failed_logins.deliver_later
   # end
   #
@@ -172,10 +173,10 @@ Sessions.configure do |config|
   # config.authenticate_method = :authenticate_user!
   #
   # Render the devices page with a specific layout (nil inherits whatever
-  # your parent controller uses — set this if your signed-in surfaces use a
-  # different layout, e.g. "app"):
+  # your parent controller uses). Use a callable when web/native shells differ:
   #
   # config.layout = nil
+  # config.layout = ->(controller) { controller.hotwire_native_app? ? "app" : "web" }
   #
   # Optional sudo gate before destructive actions on the devices page (ASVS
   # 3.3.4's "having re-entered login credentials"). The action runs only

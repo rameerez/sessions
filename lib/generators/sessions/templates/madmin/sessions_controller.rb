@@ -10,12 +10,16 @@ module Madmin
       session_row = <%= session_class %>.find(params[:id])
       device = session_row.device_name
 
-      session_row.revoke!(reason: :admin_revoked, by: current_user)
-      flash[:notice] = "Session revoked (#{device}). The device will be signed out on its next request."
+      if session_row.live?
+        session_row.revoke!(reason: :admin_revoked, by: current_user)
+        flash[:notice] = "Session revoked (#{device}). The device will be signed out on its next request."
+      else
+        flash[:alert] = "That session had already ended (#{device}). There is no live device to sign out."
+      end
 
       redirect_back fallback_location: main_app.madmin_sessions_path
     rescue ActiveRecord::RecordNotFound
-      flash[:alert] = "That session no longer exists (probably already revoked)."
+      flash[:alert] = "That session no longer exists."
       redirect_back fallback_location: main_app.madmin_sessions_path
     end
 

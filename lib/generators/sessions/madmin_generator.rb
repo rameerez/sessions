@@ -20,6 +20,9 @@ module Sessions
 
       desc "Generate Madmin resources + controllers for sessions and the login trail"
 
+      class_option :user_panel, type: :boolean, default: false,
+                                desc: "Also generate a per-user Sessions panel concern and view"
+
       def check_for_madmin!
         return if madmin_available?
 
@@ -41,6 +44,13 @@ module Sessions
       def create_controllers
         template "sessions_controller.rb", "app/controllers/madmin/sessions_controller.rb"
         template "session_events_controller.rb", "app/controllers/madmin/session_events_controller.rb"
+      end
+
+      def create_user_panel
+        return unless options[:user_panel]
+
+        copy_file "user_panel/madmin_user_panel.rb", "app/controllers/concerns/sessions/madmin_user_panel.rb"
+        copy_file "user_panel/sessions.html.erb", "app/views/madmin/users/sessions.html.erb"
       end
 
       def display_post_install_message
@@ -70,9 +80,15 @@ module Sessions
         say "       end"
 
         say "\n  3. (Optional) For a per-user panel (devices + trail on the user's"
-        say "     show page), add a member action to your users controller that"
-        say "     loads `user.sessions.live.by_recency` and `user.session_history.recent`"
-        say "     — the README's Admin section has the full recipe."
+        say "     show page), re-run with --user-panel, include"
+        say "     `Sessions::MadminUserPanel` in Madmin::UsersController, and add:"
+        say ""
+        say "       resources :users do"
+        say "         member do"
+        say "           get :sessions"
+        say "           post :revoke_all_sessions"
+        say "         end"
+        say "       end"
 
         say "\nRevoking from the index ends the row in place: that device is signed out"
         say "on its very next matching request, and the revocation lands in the trail"

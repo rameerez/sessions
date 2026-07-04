@@ -98,7 +98,7 @@ That's it. Every sign-in from now on lands on the devices page and in the trail 
 
 ### Upgrading
 
-Existing apps upgrading from 0.1.0, 0.1.1, or 0.1.2 should copy the upgrade migrations and run them:
+Existing apps upgrading from any 0.1.x release should copy the upgrade migrations and run them:
 
 ```bash
 rails generate sessions:upgrade
@@ -141,7 +141,7 @@ Three ways to ship it, pick your layer:
    (Revoke buttons render when the engine is mounted; without it you get the read-only registry.)
 3. **Eject and restyle** — `rails generate sessions:views` copies every template into `app/views/sessions/`, where your copies shadow the gem's automatically (the Devise move).
 
-The engine inherits from your `ApplicationController` (configurable via `config.parent_controller`), so your layout, auth and locale apply automatically. The current session is resolved on both stacks; destructive actions can be gated behind your own sudo/password-confirm flow with `config.require_reauthentication`. One heads-up: if your app layout leans heavily on host route helpers, isolated-engine rendering means those resolve through `main_app.*` — rendering the partials in your own page (layer 2) sidesteps the whole topic.
+The engine inherits from your `ApplicationController` (configurable via `config.parent_controller`), so your layout, auth and locale apply automatically. `config.layout` can be a string/symbol or a callable (`->(controller) { controller.hotwire_native_app? ? "app" : "web" }`) when native and browser shells differ. The current session is resolved on both stacks; destructive actions can be gated behind a sudo/password-confirm flow with `config.require_reauthentication`. One heads-up: if your app layout leans heavily on host route helpers, isolated-engine rendering means those resolve through `main_app.*` — rendering the partials in your own page (layer 2) sidesteps the whole topic.
 
 A hard rule the page enforces: **you can never touch a session you don't own** (foreign ids 404 — existence never leaks), and the current session is never revocable from the page (that's what sign-out is for).
 
@@ -152,7 +152,7 @@ A hard rule the page enforces: **you can never touch a session you don't own** (
 ```ruby
 Sessions::Event.logins / .failed_logins / .logouts / .revocations / .expirations
 Sessions::Event.recent.last_days(90).for_ip("203.0.113.7")
-event.session       # the live row it created — nil once revoked (that's the point)
+event.session       # the lifecycle row it created (live or explicitly ended)
 event.new_device?   # flagged when the login matched no prior device
 ```
 
@@ -211,6 +211,8 @@ Sessions.record_failed_attempt(request, scope: :user, identity: params[:email],
 ```
 
 Custom Warden strategies map with `config.strategy_methods = { "OtpAuthenticatable" => :otp }`. Everything else is `unknown` — the gem never guesses.
+
+Devise's `bypass_sign_in` writes directly to its session serializer and deliberately skips Warden callbacks. Do not use it to establish a new login that must appear in the registry; use `sign_in` instead. It remains appropriate for refreshing the serialization of an already-tracked login.
 
 ### Two-factor flows (TOTP apps, security keys, Touch ID)
 
@@ -278,13 +280,13 @@ Per-attempt alerts are notification fatigue *and* an abuse vector (an attacker h
 
 ```ruby
 config.repeated_failed_logins = { threshold: 5, within: 15.minutes }
-config.on_repeated_failed_logins = ->(identity:, count:, event:) do
-  user = User.find_by(email: identity) or next  # identity is AS TYPED — may match no account
+config.on_repeated_failed_logins = ->(identity:, count:, event:, user:) do
+  next unless user # nil when the typed identity matches no account
   SecurityMailer.with(user: user, event: event).repeated_failed_logins.deliver_later
 end
 ```
 
-The `event` is the attempt that tripped the threshold — IP, location and device included. This complements (not replaces) Devise's `:lockable` and Rails 8's `rate_limit`: they *stop* the attacker; this tells the *user*.
+The `event` is the attempt that tripped the threshold — IP, location and device included. `user:` is resolved in memory for the hook but still not persisted on failed events, preserving the no-enumeration data model. Existing hooks that only accept `identity:, count:, event:` keep working. This complements (not replaces) Devise's `:lockable` and Rails 8's `rate_limit`: they *stop* the attacker; this tells the *user*.
 
 ## 🌍 Geolocation (via `trackdown`, soft dependency)
 
@@ -353,7 +355,15 @@ Scopes are the admin product — `Sessions::Event.failed_logins.last_24_hours.gr
 rails generate sessions:madmin
 ```
 
-…generates the two resources (the lifecycle registry with a per-row **Revoke session** action, and the login trail with its triage scopes as filters) plus their controllers, with madmin's two namespacing footguns pre-solved. The generated files use only stock madmin APIs and are yours to restyle. For a per-user security panel (devices + trail on the user's show page), load `user.sessions.live.by_recency` and `user.session_events.recent` in a member action — including the user's *failed* attempts by matching `Sessions::Event.where(identity: Sessions::Event.normalize_identity(user.email))` (failures never link to accounts; matching the signed-in user's own identity is the safe way to show them).
+…generates the two resources (the lifecycle registry with a per-row **Revoke session** action, and the login trail with its triage scopes as filters) plus their controllers, with madmin's two namespacing footguns pre-solved. The generated files use only stock madmin APIs and are yours to restyle.
+
+For the per-user security panel that most admin dashboards want (live devices + that user's login trail), run:
+
+```bash
+rails generate sessions:madmin --user-panel
+```
+
+That adds a reusable `Sessions::MadminUserPanel` concern and `app/views/madmin/users/sessions.html.erb`. Include the concern in `Madmin::UsersController`, add the printed member routes, and add a `member_action` link from your `UserResource`.
 
 ## 🧹 Retention & the sweep
 
@@ -418,7 +428,7 @@ Sessions.configure do |config|
   config.parent_controller       = "::ApplicationController"
   config.current_user_method     = :current_user   # chain: this → current_user → Current.session&.user
   config.authenticate_method     = :authenticate_user!
-  config.layout                  = nil             # nil inherits the parent controller's layout
+  config.layout                  = nil             # nil, "app", or ->(controller) { ... }
   config.require_reauthentication = nil            # ->(controller) { ... } sudo gate
   config.session_class           = "Session"
   config.strategy_methods        = {}              # { "OtpAuthenticatable" => :otp }

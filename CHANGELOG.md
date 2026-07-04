@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 (2026-07-03)
+
+- Prevent fresh-install and adopted-table migrations from creating the `ended_by` polymorphic index twice.
+- Preserve custom string/ULID primary-key types in the 0.2 lifecycle upgrade migration.
+- Make generated Madmin revocation controls lifecycle-aware so ended rows cannot report a second successful revoke.
+- Correct the 0.2 documentation for `event.session`: it resolves retained lifecycle rows after logout/revocation and becomes `nil` only after hard deletion.
+- Document that Devise's `bypass_sign_in` skips the Warden callbacks required to register a new session.
+- Bound the device parser dependency to the tested `browser` 6.x API line.
+- Let `config.layout` be a callable (`->(controller) { ... }`) for hosts that switch layouts between web and native shells.
+- Pass `user:` (resolved best-effort, never persisted on the failed event) to `on_repeated_failed_logins` when the hook opts into the keyword.
+- Add `sessions_devices_for(user)` / `sessions_history_for(user)` helpers so ejected/custom views keep live-device and enumeration-safe history semantics in one place.
+- Add `rails generate sessions:madmin --user-panel` for the repeated per-user admin security panel concern/view.
+
 ## 0.2.0 (2026-06-21)
 
 Lifecycle-row rewrite and auth-safety correction for the Hotwire Native / Devise remember-me hardening introduced in 0.1.3.

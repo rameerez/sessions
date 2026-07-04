@@ -32,6 +32,29 @@ class RepeatedFailuresTest < ActiveSupport::TestCase
     assert_equal "203.0.113.7", event.ip_address # the event carries IP/device/geo
   end
 
+  test "passes a resolved user when the hook opts into the keyword" do
+    user = create_user(email: "victim@example.com")
+    Sessions.config.repeated_failed_logins = { threshold: 2, within: 15.minutes }
+    captured = nil
+    Sessions.config.on_repeated_failed_logins = lambda do |identity:, count:, event:, user:|
+      captured = [identity, count, event, user]
+    end
+
+    2.times { fail_once(identity: "Victim@Example.com") }
+
+    assert_equal ["victim@example.com", 2, Sessions::Event.last, user], captured
+  end
+
+  test "passes nil as the resolved user for unknown identities" do
+    Sessions.config.repeated_failed_logins = { threshold: 1, within: 15.minutes }
+    captured = :unset
+    Sessions.config.on_repeated_failed_logins = ->(user:, **) { captured = user }
+
+    fail_once(identity: "nobody@example.com")
+
+    assert_nil captured
+  end
+
   test "failures outside the window don't count toward the threshold" do
     Sessions.config.repeated_failed_logins = { threshold: 3, within: 15.minutes }
     fired = false

@@ -78,7 +78,10 @@ class Create<%= table_name.camelize %> < ActiveRecord::Migration<%= migration_ve
       # thing a Devise/Warden request is allowed to enforce.
       t.datetime :ended_at
       t.string :ended_reason
-      t.references :ended_by, polymorphic: true, type: foreign_key_type
+      # The explicit index below keeps the generated name consistent across
+      # create-table and upgrade paths. `references` indexes by default, so
+      # disable that implicit index to avoid two identical indexes.
+      t.references :ended_by, polymorphic: true, type: foreign_key_type, index: false
       t.send(json_column_type, :ended_metadata)
 
       t.timestamps

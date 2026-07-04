@@ -25,6 +25,7 @@ class InstallGeneratorTest < Rails::Generators::TestCase
       assert_match(/change_table :sessions/, migration)
       assert_match(/t\.string :token_digest/, migration)
       assert_match(/t\.string :adoption_key/, migration)
+      assert_match(/t\.references :ended_by, polymorphic: true, type: foreign_key_type, index: false/, migration)
       # Column types resolve at MIGRATION RUN time (jsonb on pg, json
       # elsewhere) so one migration file works across the dev/prod DB split.
       assert_match(/t\.send\(json_column_type, :auth_detail\)/, migration)
@@ -53,6 +54,7 @@ class InstallGeneratorTest < Rails::Generators::TestCase
       assert_match(/t\.references :user, null: false, foreign_key: true, type: foreign_key_type/, migration)
       assert_match(/t\.text :user_agent/, migration)
       assert_match(/t\.string :adoption_key/, migration)
+      assert_match(/t\.references :ended_by, polymorphic: true, type: foreign_key_type, index: false/, migration)
       assert_match(/primary_and_foreign_key_types/, migration) # uuid/bigint adaptivity
     end
     assert_file "app/models/session.rb" do |model|
@@ -250,6 +252,12 @@ class UpgradeGeneratorTest < Rails::Generators::TestCase
       assert_match(/add_column :sessions_events, :app_build, :string/, migration)
       assert_match(/column_exists\?\(:sessions_events, :app_build\)/, migration)
     end
+
+    assert_migration "db/migrate/add_sessions_lifecycle_to_sessions.rb" do |migration|
+      assert_match(/when nil, :bigserial then :bigint/, migration)
+      assert_match(/when :serial then :integer/, migration)
+      assert_match(/else config\.options\[config\.orm\]\[:primary_key_type\]/, migration)
+    end
   end
 
   test "--model targets custom session tables" do
@@ -287,6 +295,8 @@ class MadminGeneratorTest < Rails::Generators::TestCase
       assert_match(/scope :failed_logins/, resource)
     end
     assert_file "app/controllers/madmin/sessions_controller.rb", /def revoke/
+    assert_file "app/controllers/madmin/sessions_controller.rb", /if session_row\.live\?/
+    assert_file "app/madmin/resources/session_resource.rb", /if @record\.live\?/
     # The namespaced-resource pointer must be the stock-Madmin-portable
     # resource_name override, NOT a resource_class_name class attribute
     # (that's a host-app patch some dashboards carry, not Madmin API).
@@ -296,6 +306,26 @@ class MadminGeneratorTest < Rails::Generators::TestCase
     # The route-ordering footgun is spelled out in the instructions.
     assert_match(/BEFORE `resources :sessions`/, output)
     assert_match(/namespace :sessions do/, output)
+  end
+
+  test "--user-panel adds the reusable per-user Madmin panel files and instructions" do
+    Sessions::Generators::MadminGenerator.any_instance.stubs(:madmin_available?).returns(true)
+
+    output = run_generator %w[--user-panel]
+
+    assert_file "app/controllers/concerns/sessions/madmin_user_panel.rb" do |concern|
+      assert_match(/module Sessions/, concern)
+      assert_match(/module MadminUserPanel/, concern)
+      assert_match(/def sessions/, concern)
+      assert_match(/def revoke_all_sessions/, concern)
+      assert_match(/user\.session_history\.recent/, concern)
+    end
+    assert_file "app/views/madmin/users/sessions.html.erb" do |view|
+      assert_match(/Sessions &amp; devices/, view)
+      assert_match(/revoke_all_sessions_madmin_user_path/, view)
+    end
+    assert_match(/get :sessions/, output)
+    assert_match(/post :revoke_all_sessions/, output)
   end
 
   test "aborts with guidance when madmin isn't in the bundle" do

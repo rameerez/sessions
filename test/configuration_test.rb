@@ -126,6 +126,23 @@ class ConfigurationTest < ActiveSupport::TestCase
     assert_raises(Sessions::ConfigurationError) { Sessions.config.require_reauthentication = :sudo }
   end
 
+  test "layout accepts strings, symbols, callables, or nil" do
+    Sessions.config.layout = "dashboard"
+    assert_equal "dashboard", Sessions.config.layout
+
+    Sessions.config.layout = :application
+    assert_equal :application, Sessions.config.layout
+
+    resolver = ->(_controller) { "native" }
+    Sessions.config.layout = resolver
+    assert_equal resolver, Sessions.config.layout
+
+    Sessions.config.layout = nil
+    assert_nil Sessions.config.layout
+
+    assert_raises(Sessions::ConfigurationError) { Sessions.config.layout = 42 }
+  end
+
   test "class names are stored as strings and resolved lazily" do
     Sessions.config.session_class = Session
     assert_equal "Session", Sessions.config.session_class
