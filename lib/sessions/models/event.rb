@@ -204,13 +204,26 @@ module Sessions
 
       def call_repeated_failed_logins_hook(**kwargs)
         hook = Sessions.config.on_repeated_failed_logins
-        return hook.call(**kwargs) unless hook.respond_to?(:parameters)
-        return hook.call(**kwargs) if hook.parameters.any? { |type, _name| type == :keyrest }
+        params = hook_keyword_parameters(hook)
+        return hook.call(**kwargs) if params.nil?
+        return hook.call(**kwargs) if params.any? { |type, _name| type == :keyrest }
 
-        accepted = hook.parameters
-                       .select { |type, _name| %i[key keyreq].include?(type) }
-                       .filter_map { |_type, name| name }
+        accepted = params.select { |type, _name| %i[key keyreq].include?(type) }
+                         .filter_map { |_type, name| name }
         hook.call(**kwargs.slice(*accepted))
+      end
+
+      # Procs/lambdas/Method objects expose #parameters directly; a plain
+      # callable object (a class with #call) only exposes them through
+      # #method(:call). nil means "cannot introspect" — dispatch everything
+      # and let the hook decide.
+      def hook_keyword_parameters(hook)
+        return hook.parameters if hook.respond_to?(:parameters)
+        return hook.method(:call).parameters if hook.respond_to?(:call)
+
+        nil
+      rescue StandardError
+        nil
       end
 
       def context_for(request)

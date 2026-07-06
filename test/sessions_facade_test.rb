@@ -111,6 +111,24 @@ class SessionsFacadeTest < ActiveSupport::TestCase
     assert Sessions::Event.exists?(fresh_event.id)
   end
 
+  test "sweep expiry is a quiet lifecycle end — no remember-me rotation, no revoked hook" do
+    Sessions.config.idle_timeout = 1.hour
+    fired = false
+    Sessions.config.on_session_revoked = ->(**) { fired = true }
+
+    user = create_user
+    stale = create_session_for(user)
+    stale.update_columns(created_at: 2.hours.ago)
+
+    Sessions.sweep!
+
+    assert_equal "expired", stale.reload.ended_reason
+    assert_equal 1, Sessions::Event.expirations.count, "expiry still writes its audit event"
+    refute fired,
+           "idle expiry is timeout policy, not a revocation: the adapter's inline expiry uses end! " \
+           "and Devise's timeoutable never rotates remember-me — the sweep must match both"
+  end
+
   test "sweep! with no configuration only purges retention" do
     user = create_user
     ancient = create_session_for(user)
