@@ -202,12 +202,21 @@ module Sessions
             # v0.1.3 intentionally reattached remember-me restores to an
             # existing device row without writing another login event, storing
             # [row_id, nil] in Warden. That is fine as a tracking hint, but it
-            # must never become an auth/liveness check. Touch when the signed
-            # browser-continuity cookie still agrees; otherwise clear only the
-            # gem's tracking key and let Devise/Rails keep owning auth.
+            # must never become an auth/liveness check FROM ABSENCE: missing
+            # rows, mismatched cookies and quiet housekeeping all fail open.
+            # An EXPLICIT ending is different — when the authenticated owner,
+            # the signed browser-continuity cookie and the row all agree this
+            # is the same device, and that row was deliberately ended
+            # (admin/user revoke, sign-out-everywhere), the revocation must
+            # mean what the UI promised: signed out on its next request.
+            # Housekeeping reasons (superseded) never kick and fall through
+            # to the live-replacement reattach below.
             # Source: https://github.com/rameerez/sessions/blob/v0.1.3/CHANGELOG.md
-            if existing_row_session?(found, record, scope, warden.request) && found.live?
+            same_device = existing_row_session?(found, record, scope, warden.request)
+            if same_device && found.live?
               Sessions.safely("warden.remembered_existing.touch") { found.touch_last_seen!(warden.request) }
+            elsif same_device && found.sessions_kicks_on_resume?
+              kick!(warden, scope)
             elsif (replacement = live_replacement_for(found, record, scope, warden.request))
               attach_existing_row(replacement, warden, scope)
             else

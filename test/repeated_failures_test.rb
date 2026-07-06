@@ -32,6 +32,24 @@ class RepeatedFailuresTest < ActiveSupport::TestCase
     assert_equal "203.0.113.7", event.ip_address # the event carries IP/device/geo
   end
 
+  test "a plain callable object hook still receives the alert" do
+    Sessions.config.repeated_failed_logins = { threshold: 2, within: 15.minutes }
+    captured = nil
+    hook_class = Class.new do
+      define_method(:call) do |identity:, count:, event:|
+        captured = [identity, count, event]
+      end
+    end
+    Sessions.config.on_repeated_failed_logins = hook_class.new
+
+    2.times { fail_once }
+
+    refute_nil captured,
+               "class-based hooks have no #parameters of their own — dispatch must introspect " \
+               "#method(:call) instead of passing kwargs the hook never asked for"
+    assert_equal ["victim@example.com", 2], captured[0, 2]
+  end
+
   test "passes a resolved user when the hook opts into the keyword" do
     user = create_user(email: "victim@example.com")
     Sessions.config.repeated_failed_logins = { threshold: 2, within: 15.minutes }

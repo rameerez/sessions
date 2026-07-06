@@ -452,6 +452,106 @@ class WardenAdapterTest < ActiveSupport::TestCase
     assert_equal 0, Sessions::Event.revocations.count
   end
 
+  test "an explicitly revoked row kicks a tokenless known-device restore on its next request" do
+    user = create_user
+    existing = user.sessions.build(
+      scope: "user",
+      ip_address: "203.0.113.7",
+      user_agent: UserAgents::NATIVE_IOS,
+      token_digest: Sessions.token_digest(Sessions.generate_token),
+      device_id: "device-1",
+      auth_method: "password",
+      auth_detail: { "remembered" => true }
+    )
+    existing.sessions_suppress_login_event = true
+    Sessions.with_request(fake_request(ua: UserAgents::NATIVE_IOS)) { existing.save! }
+
+    Sessions::Adapters::Warden.stubs(:device_id_from_request).returns("device-1")
+    get "/native/entry", {}, remembered_html_headers(user)
+    tracking = Sessions::Adapters::Warden.parse_tracking_state(last_request.env["rack.session"]["warden.user.user.session"]["sessions"])
+    assert_equal "hint", tracking[:mode], "remembered reattach must be tokenless hint tracking"
+
+    existing.revoke!(reason: :admin_revoked)
+
+    get "/me", {}, html_native_headers
+
+    assert_equal 401, last_response.status,
+                 "an admin-revoked device must be signed out even when its tracking is a remember-me hint — " \
+                 "the association is proven (authenticated owner + signed device cookie + explicit end)"
+    assert_includes last_response.body, "session_revoked"
+    session_hash = last_request.env["rack.session"].to_hash
+    refute session_hash.key?("warden.user.user.key")
+    refute session_hash.key?("warden.user.user.session")
+  end
+
+  test "a superseded row under hint tracking attaches the live replacement instead of kicking" do
+    user = create_user
+    existing = user.sessions.build(
+      scope: "user",
+      ip_address: "203.0.113.7",
+      user_agent: UserAgents::NATIVE_IOS,
+      token_digest: Sessions.token_digest(Sessions.generate_token),
+      device_id: "device-1",
+      auth_method: "password",
+      auth_detail: { "remembered" => true }
+    )
+    existing.sessions_suppress_login_event = true
+    Sessions.with_request(fake_request(ua: UserAgents::NATIVE_IOS)) { existing.save! }
+
+    Sessions::Adapters::Warden.stubs(:device_id_from_request).returns("device-1")
+    get "/native/entry", {}, remembered_html_headers(user)
+    assert_equal "hint",
+                 Sessions::Adapters::Warden.parse_tracking_state(last_request.env["rack.session"]["warden.user.user.session"]["sessions"])[:mode]
+
+    # The same browser logs in again elsewhere in the stack: the old row is
+    # quietly superseded by a fresh one. Housekeeping must NEVER kick — the
+    # exact 0.1.x bug class this gem was rebuilt around.
+    replacement = user.sessions.build(
+      scope: "user",
+      ip_address: "203.0.113.7",
+      user_agent: UserAgents::NATIVE_IOS,
+      token_digest: Sessions.token_digest(Sessions.generate_token),
+      device_id: "device-1"
+    )
+    replacement.sessions_suppress_login_event = true
+    Sessions.with_request(fake_request(ua: UserAgents::NATIVE_IOS)) { replacement.save! }
+    assert_equal "superseded", existing.reload.ended_reason, "the new row supersedes the old one"
+
+    get "/me", {}, html_native_headers
+
+    assert_equal 200, last_response.status, "superseded housekeeping must never log anyone out"
+    tracking = Sessions::Adapters::Warden.parse_tracking_state(last_request.env["rack.session"]["warden.user.user.session"]["sessions"])
+    assert_equal replacement.id, tracking[:id], "tracking re-attaches to the live replacement row"
+  end
+
+  test "Sessions.current resolves a hint-tracked live row (the devices page current badge)" do
+    user = create_user
+    existing = user.sessions.build(
+      scope: "user",
+      ip_address: "203.0.113.7",
+      user_agent: UserAgents::NATIVE_IOS,
+      token_digest: Sessions.token_digest(Sessions.generate_token),
+      device_id: "device-1",
+      auth_method: "password",
+      auth_detail: { "remembered" => true }
+    )
+    existing.sessions_suppress_login_event = true
+    Sessions.with_request(fake_request(ua: UserAgents::NATIVE_IOS)) { existing.save! }
+
+    Sessions::Adapters::Warden.stubs(:device_id_from_request).returns("device-1")
+    get "/native/entry", {}, remembered_html_headers(user)
+
+    get "/current_scope", { "scope" => "user" }, html_native_headers
+    assert_includes last_response.body, "row scope: user",
+                    "a remembered device is still THIS device — the badge (and the devices page's " \
+                    "refuse-to-revoke-current guard) must resolve it"
+
+    # Without the corroborating signed device cookie the hint is not enough.
+    Sessions::Adapters::Warden.stubs(:device_id_from_request).returns("someone-elses-device")
+    get "/current_scope", { "scope" => "user" }, html_native_headers
+    assert_includes last_response.body, "row scope: none"
+  end
+
   test "resuming a session validates the token and touches last_seen_at" do
     user = create_user
     login!(user)

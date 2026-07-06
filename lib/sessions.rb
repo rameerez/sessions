@@ -364,10 +364,22 @@ module Sessions
         next unless key.to_s.match?(pattern) && value.is_a?(Hash)
 
         tracking = Adapters::Warden.parse_tracking_state(value[Adapters::Warden::SESSION_KEY])
-        next unless tracking && tracking[:mode] == "credential"
+        next unless tracking
 
         row = session_model.live.find_by(id: tracking[:id])
-        return row if row.respond_to?(:sessions_token_matches?) && row&.sessions_token_matches?(tracking[:token])
+        next unless row
+
+        case tracking[:mode]
+        when "credential"
+          return row if row.respond_to?(:sessions_token_matches?) && row.sessions_token_matches?(tracking[:token])
+        when "hint"
+          # Tokenless remembered reattach: the tracking state is written
+          # server-side, but corroborate with the signed browser-continuity
+          # cookie before answering "this is the current device" — the same
+          # proof the adapter demands before touching or kicking a hint row.
+          device_id = Adapters::Warden.device_id_from_request(request)
+          return row if device_id.present? && device_id == row.try(:device_id)
+        end
       end
       nil
     rescue StandardError
@@ -397,7 +409,13 @@ module Sessions
 
       count = 0
       expired_sessions_scope.find_each do |session|
-        session.revoke!(reason: :expired)
+        # Expiry is timeout POLICY, not a revocation: end the row (writes the
+        # `expired` audit event; `expired` kicks on resume) but never rotate
+        # the account-wide remember-me credential or fire on_session_revoked.
+        # This matches the adapter's inline expiry and Devise's timeoutable,
+        # where remember-me revival after a timeout is the host's own
+        # rememberable policy — not ours to nuke for every other device.
+        session.end!(reason: :expired)
         count += 1
       end
       count

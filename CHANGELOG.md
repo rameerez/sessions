@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2 (2026-07-06)
+
+Closes the revocation-semantics gaps found auditing the 0.2.x lifecycle model against production data.
+
+- **Explicit revocations now kick tokenless remembered devices too.** Remember-me restores reattach to their device row as a tokenless tracking hint (0.1.3 semantics). Hints still never turn absence or housekeeping into a logout — but when the authenticated owner, the signed browser-continuity cookie, and the row all agree it is the same device AND that row was explicitly ended (`admin_revoked`, `user_revoked`, `logout_everywhere`, …), the next request now kicks, exactly as the admin/devices UI promises. Previously such devices kept their live host session until it expired naturally (remember-me revival was already blocked; the active rack session was not).
+- **`Sessions.current` resolves hint-tracked rows.** Remembered devices get their "this device" badge back on the devices page — and the page's refuse-to-revoke-current guard (plus `revoke_other_sessions!(current:)`) works for them again. The hint is corroborated against the signed browser-continuity cookie before being trusted.
+- **Sweep expiry no longer masquerades as revocation.** `Sessions.sweep!` ends idle/over-age sessions with `end!(reason: :expired)` (audit event written, kicks on resume) instead of `revoke!` — no more account-wide remember-me rotation or `on_session_revoked` fire for timeout policy, matching the adapter's inline expiry and Devise's own timeoutable semantics.
+- **Plain callable-object hooks receive `on_repeated_failed_logins` again.** 0.2.1's keyword-slicing dispatch introspected `#parameters`, which only Procs and Methods expose; a class-based hook (`def call(identity:, count:, event:)`) silently lost the alert. Dispatch now introspects `#method(:call)` for such objects.
+
 ## 0.2.1 (2026-07-03)
 
 - Prevent fresh-install and adopted-table migrations from creating the `ended_by` polymorphic index twice.
