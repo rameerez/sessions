@@ -6,6 +6,7 @@ require "time"
 require "active_support"
 require "active_support/message_verifier"
 require "active_support/core_ext/time/calculations"
+require "active_support/core_ext/numeric/time" # 5.minutes for max_age: and fresh?(within:)
 require "active_support/security_utils"
 require_relative "errors"
 
@@ -25,7 +26,7 @@ module Sessions
   #
   #   # The other service (only `require "sessions/reauthentication"` is needed):
   #   assertion = Sessions::Reauthentication.verify(token, audience: "billing", key: ENV["REAUTH_KEY"],
-  #                                                 subject: user_id, purpose: "refund:42")
+  #                                                 subject: "User:#{user_id}", purpose: "refund:42")
   #   assertion&.fresh?(within: 5.minutes)  # => true
   #
   # An assertion is a signed statement, not a session: it expires quickly

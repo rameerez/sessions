@@ -2,6 +2,19 @@
 
 require "test_helper"
 
+# An owner and a session model in one namespace that store short polymorphic
+# type names (store_full_class_name = false), as Rails allows.
+module ReauthNamespace
+  class Member < ActiveRecord::Base
+    self.table_name = "users"
+    self.store_full_class_name = false
+  end
+
+  class Session < ::Session
+    self.store_full_class_name = false
+  end
+end
+
 class ReauthenticationTest < ActiveSupport::TestCase
   KEY = "k" * 48
 
@@ -85,11 +98,25 @@ class ReauthenticationTest < ActiveSupport::TestCase
       require "sessions/reauthentication"
       token = Sessions::Reauthentication.issue(subject: "u1", session_id: "s1", method: "password",
                                                authenticated_at: Time.now, audience: "a", key: "#{KEY}")
-      print Sessions::Reauthentication.verify(token, audience: "a", key: "#{KEY}", subject: "u1").session_id
+      assertion = Sessions::Reauthentication.verify(token, audience: "a", key: "#{KEY}", subject: "u1",
+                                                           max_age: 5.minutes)
+      print assertion.session_id, " ", assertion.fresh?(within: 5.minutes)
     RUBY
     output = IO.popen([RbConfig.ruby, "-e", script], err: %i[child out], &:read)
 
-    assert_equal "s1", output
+    assert_equal "s1 true", output
+  end
+
+  test "a stored short polymorphic type gives the same subject as the owner record" do
+    owner = ReauthNamespace::Member.find(@user.id)
+    session = ReauthNamespace::Session.new(user_id: @user.id)
+    session.define_singleton_method(:user_type) { "Member" } # store_full_class_name = false stores "Member"
+
+    assert_equal "ReauthNamespace::Member:#{@user.id}", session.reauthentication_subject
+    assert_equal Sessions::Reauthentication.subject_for(owner), session.reauthentication_subject
+
+    session.define_singleton_method(:user_type) { "Ghost" } # a type that no longer resolves keeps its stored name
+    assert_equal "Ghost:#{@user.id}", session.reauthentication_subject
   end
 
   test "the controller helpers record and assert on the current session" do

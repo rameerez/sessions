@@ -371,7 +371,9 @@ Some actions deserve a fresh password: approving a payment, changing a payout ac
 
 ```ruby
 # config/initializers/sessions.rb
-config.reauthentication_key = Rails.application.credentials.reauthentication_key # >= 32 bytes, shared with the verifier
+Sessions.configure do |config|
+  config.reauthentication_key = Rails.application.credentials.reauthentication_key # >= 32 bytes, shared with the verifier
+end
 
 # Your controller, after YOUR check succeeded (the gem never checks credentials):
 class ReauthenticationsController < ApplicationController

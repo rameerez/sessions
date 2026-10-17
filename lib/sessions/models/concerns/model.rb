@@ -208,15 +208,30 @@ module Sessions
     end
 
     # The owner's canonical subject ("User:42"), with the owner class even
-    # when the owner record is not loaded.
+    # when the owner record is not loaded. A stored polymorphic type is
+    # resolved to its class first, so the subject is the full class name
+    # also when `store_full_class_name` is false; it then matches
+    # Sessions::Reauthentication.subject_for(owner).
     def reauthentication_subject
-      owner_type = try(:user_type).presence || self.class.reflect_on_association(:user)&.klass&.base_class&.name
+      stored_type = try(:user_type).presence
+      owner_class = if stored_type
+                      sessions_polymorphic_owner_class(stored_type)
+                    else
+                      self.class.reflect_on_association(:user)&.klass
+                    end
+      owner_type = owner_class.respond_to?(:base_class) ? owner_class.base_class.name : stored_type
       "#{owner_type}:#{user_id}"
     end
 
     private
 
     def reauthenticatable? = !ended? && !sessions_expired?
+
+    def sessions_polymorphic_owner_class(stored_type)
+      self.class.polymorphic_class_for(stored_type)
+    rescue NameError, ArgumentError
+      nil
+    end
 
     public
 
