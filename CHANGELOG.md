@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Re-authentication assertions.** `session.reauthenticated!(method: :password)` records a fresh re-authentication on the session row (in `auth_detail`, no migration); `session.reauthenticated_within?` answers whether it is recent; `session.reauthentication_assertion(audience:, purpose:)` issues a short-lived signed assertion of it, and `Sessions::Reauthentication.verify(token, audience:, key:, subject:, purpose:, max_age:)` checks one in another service with only the shared key (loadable on its own with `require "sessions/reauthentication"`). Opt-in controller helpers: `Sessions::ReauthenticationHelpers`. Configuration: `reauthentication_key`, `reauthentication_window` (5 minutes), `reauthentication_assertion_ttl` (1 minute).
+
 ## 0.2.2 (2026-07-06)
 
 Closes the revocation-semantics gaps found auditing the 0.2.x lifecycle model against production data.

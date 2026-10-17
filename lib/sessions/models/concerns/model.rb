@@ -144,6 +144,64 @@ module Sessions
       update!(auth_detail: detail.merge("second_factor" => kind.to_s))
     end
 
+    # --- Re-authentication ----------------------------------------------------
+
+    # Record that the person re-authenticated on THIS session just now (a
+    # password re-entry, a passkey or a second factor). Call it after your
+    # own check succeeded; the gem never checks credentials itself:
+    #
+    #   if current_user.valid_password?(params[:password])
+    #     Sessions.current(request)&.reauthenticated!(method: :password)
+    #   end
+    #
+    # Stored in `auth_detail` like `second_factor!`, so no migration is needed.
+    def reauthenticated!(method: :password, at: Time.current)
+      unless self.class.column_names.include?("auth_detail")
+        raise Sessions::Error, "re-authentication needs the auth_detail column (rails generate sessions:install)"
+      end
+      raise Sessions::Error, "an ended session cannot be re-authenticated" if ended?
+
+      detail = (try(:auth_detail) || {}).to_h
+      update!(auth_detail: detail.merge("reauthenticated_at" => at.utc.iso8601(6),
+                                        "reauthentication_method" => method.to_s))
+    end
+
+    # When the person last re-authenticated on this session, or nil.
+    def reauthenticated_at
+      value = (try(:auth_detail) || {}).to_h["reauthenticated_at"]
+      value && Time.iso8601(value)
+    rescue ArgumentError
+      nil
+    end
+
+    def reauthentication_method = (try(:auth_detail) || {}).to_h["reauthentication_method"]
+
+    # True when this live session re-authenticated within the duration
+    # (default: config.reauthentication_window).
+    def reauthenticated_within?(duration = Sessions.config.reauthentication_window)
+      at = reauthenticated_at
+      !ended? && at.present? && at > duration.ago && at <= Time.current
+    end
+
+    # A short-lived signed assertion of the last re-authentication, for one
+    # audience (and optionally one purpose). Another service verifies it with
+    # Sessions::Reauthentication.verify and the shared key. Raises
+    # Sessions::Reauthentication::NotRecent unless the re-authentication is
+    # within config.reauthentication_window.
+    def reauthentication_assertion(audience:, purpose: nil, within: Sessions.config.reauthentication_window)
+      unless reauthenticated_within?(within)
+        raise Sessions::Reauthentication::NotRecent,
+              "no re-authentication within #{within.inspect}"
+      end
+
+      config = Sessions.config
+      Sessions::Reauthentication.issue(
+        subject: try(:user_id) || try(:authenticatable_id), session_id: id, method: reauthentication_method,
+        authenticated_at: reauthenticated_at, audience: audience, purpose: purpose,
+        key: config.resolved_reauthentication_key, expires_in: config.reauthentication_assertion_ttl
+      )
+    end
+
     # --- Revocation -----------------------------------------------------------
 
     # End this registry row without deleting it. This is the core v0.2

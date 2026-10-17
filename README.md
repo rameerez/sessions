@@ -365,6 +365,41 @@ rails generate sessions:madmin --user-panel
 
 That adds a reusable `Sessions::MadminUserPanel` concern and `app/views/madmin/users/sessions.html.erb`. Include the concern in `Madmin::UsersController`, add the printed member routes, and add a `member_action` link from your `UserResource`.
 
+## 🔐 Re-authentication assertions ("prove you just typed your password")
+
+Some actions deserve a fresh password: approving a payment, changing a payout account, confirming something another service will act on. `sessions` records that fresh re-authentication on the session row and can hand out a short-lived, signed **assertion** of it that another service verifies with a shared key — no database, no cookie, no models on the other side.
+
+```ruby
+# config/initializers/sessions.rb
+config.reauthentication_key = Rails.application.credentials.reauthentication_key # >= 32 bytes, shared with the verifier
+
+# Your controller, after YOUR check succeeded (the gem never checks credentials):
+class ReauthenticationsController < ApplicationController
+  include Sessions::ReauthenticationHelpers
+
+  def create
+    return render(:new, status: :unprocessable_entity) unless current_user.valid_password?(params[:password])
+
+    record_sessions_reauthentication!(method: :password)
+    token = sessions_reauthentication_assertion(audience: "payments", purpose: "payout:42")
+    redirect_to payments_service_url(assertion: token), allow_other_host: true
+  end
+end
+```
+
+The other service needs only `require "sessions/reauthentication"` and the key:
+
+```ruby
+assertion = Sessions::Reauthentication.verify(token, audience: "payments", key: ENV["REAUTH_KEY"],
+                                              subject: user_id, purpose: "payout:42", max_age: 5.minutes)
+assertion&.method  # => "password"
+assertion&.jti     # unique: keep the accepted ones for a minute to refuse replays
+```
+
+On the model: `session.reauthenticated!(method: :password)`, `session.reauthenticated_within?(5.minutes)`, `session.reauthenticated_at`, and `session.reauthentication_assertion(audience:, purpose:)` (raises `Sessions::Reauthentication::NotRecent` without a recent re-authentication). An ended session is never recent. The state lives in `auth_detail`, so no migration is needed.
+
+What an assertion is not: a session or a bearer login. It expires after `reauthentication_assertion_ttl` (default one minute), it names one audience and one purpose, and `verify` returns `nil` for anything else — another key, audience, subject or purpose, a tampered or expired token, or a re-authentication older than `max_age`.
+
 ## 🧹 Retention & the sweep
 
 The install generator drops a `SessionsSweepJob` into `app/jobs/` — schedule it daily:
@@ -430,6 +465,9 @@ Sessions.configure do |config|
   config.authenticate_method     = :authenticate_user!
   config.layout                  = nil             # nil, "app", or ->(controller) { ... }
   config.require_reauthentication = nil            # ->(controller) { ... } sudo gate
+  config.reauthentication_key    = nil             # shared secret (>= 32 bytes) for re-authentication assertions
+  config.reauthentication_window = 5.minutes       # how recent a re-authentication must be to assert it
+  config.reauthentication_assertion_ttl = 1.minute # how long an issued assertion stays valid
   config.session_class           = "Session"
   config.strategy_methods        = {}              # { "OtpAuthenticatable" => :otp }
 end

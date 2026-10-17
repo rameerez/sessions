@@ -192,6 +192,12 @@ module Sessions
     # never through to the destructive action).
     attr_reader :require_reauthentication
 
+    # Re-authentication assertions (Sessions::Reauthentication): the shared
+    # secret that signs them (a String of at least 32 bytes, or a callable
+    # returning one; nil disables issuing), how recent a re-authentication
+    # must be to issue one, and how long an issued assertion stays valid.
+    attr_reader :reauthentication_key, :reauthentication_window, :reauthentication_assertion_ttl
+
     # The host's session-of-record model, as a string. "Session" matches
     # both the Rails 8 generator and the model our install generator writes
     # in Devise mode. Escape hatch for apps with a conflicting legacy
@@ -239,6 +245,9 @@ module Sessions
       @authenticate_method = :authenticate_user!
       @layout = nil
       @require_reauthentication = nil
+      @reauthentication_key = nil
+      @reauthentication_window = 5.minutes
+      @reauthentication_assertion_ttl = 1.minute
       @session_class = "Session"
       @strategy_methods = {}
     end
@@ -395,6 +404,31 @@ module Sessions
       @require_reauthentication = ensure_callable(value, "require_reauthentication")
     end
 
+    def reauthentication_key=(value)
+      if value.nil? || value.respond_to?(:call) || (value.is_a?(String) && value.bytesize >= 32)
+        @reauthentication_key = value
+        return
+      end
+
+      raise ConfigurationError, "reauthentication_key must be a String of at least 32 bytes, a callable, or nil"
+    end
+
+    # The signing key, resolved from a callable on use (so it can read credentials lazily).
+    def resolved_reauthentication_key
+      key = @reauthentication_key.respond_to?(:call) ? @reauthentication_key.call : @reauthentication_key
+      raise ConfigurationError, "config.reauthentication_key is not set" if key.to_s.empty?
+
+      key
+    end
+
+    def reauthentication_window=(value)
+      @reauthentication_window = ensure_positive_duration(value, "reauthentication_window")
+    end
+
+    def reauthentication_assertion_ttl=(value)
+      @reauthentication_assertion_ttl = ensure_positive_duration(value, "reauthentication_assertion_ttl")
+    end
+
     def session_class=(value)
       name = value.is_a?(Class) ? value.name : value.to_s
       raise ConfigurationError, "session_class can't be blank" if name.strip.empty?
@@ -438,6 +472,12 @@ module Sessions
       end
 
       value
+    end
+
+    def ensure_positive_duration(value, name)
+      return value if value.is_a?(Numeric) && value.positive?
+
+      raise ConfigurationError, "#{name} must be a positive duration (for example 5.minutes), got #{value.inspect}"
     end
 
     def ensure_callable(value, name)
