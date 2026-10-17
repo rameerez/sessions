@@ -38,10 +38,10 @@ class ReauthenticationTest < ActiveSupport::TestCase
     @session.reauthenticated!
     token = @session.reauthentication_assertion(audience: "billing", purpose: "refund:42")
 
-    assertion = Sessions::Reauthentication.verify(token, audience: "billing", key: KEY, subject: @user.id,
+    assertion = Sessions::Reauthentication.verify(token, audience: "billing", key: KEY, subject: @user,
                                                          purpose: "refund:42")
 
-    assert_equal [@user.id.to_s, @session.id.to_s, "password", "billing", "refund:42"],
+    assert_equal ["User:#{@user.id}", @session.id.to_s, "password", "billing", "refund:42"],
                  [assertion.subject, assertion.session_id, assertion.method, assertion.audience, assertion.purpose]
     assert assertion.fresh?(within: 1.minute)
     assert_match(/\A\h{8}-/, assertion.jti)
@@ -101,15 +101,79 @@ class ReauthenticationTest < ActiveSupport::TestCase
       def initialize(request) = @request = request
       public :record_sessions_reauthentication!, :sessions_reauthenticated?, :sessions_reauthentication_assertion
     end.new(:request)
-    Sessions.stubs(:current).with(:request).returns(@session)
+    Sessions.stubs(:current).with(:request, scope: nil).returns(@session)
 
-    assert_nil host.sessions_reauthentication_assertion(audience: "billing")
-    refute host.sessions_reauthenticated?
+    assert_nil host.sessions_reauthentication_assertion(@user, audience: "billing")
+    refute host.sessions_reauthenticated?(@user)
 
-    host.record_sessions_reauthentication!(method: :passkey)
+    host.record_sessions_reauthentication!(@user, method: :passkey)
 
-    assert host.sessions_reauthenticated?
-    token = host.sessions_reauthentication_assertion(audience: "billing")
+    assert host.sessions_reauthenticated?(@user)
+    token = host.sessions_reauthentication_assertion(@user, audience: "billing")
     assert_equal "passkey", Sessions::Reauthentication.verify(token, audience: "billing", key: KEY).method
+  end
+
+  test "the helpers refuse to act on another owner's session" do
+    other = User.create!(email_address: "other-#{SecureRandom.hex(4)}@example.test", password: "s3kr1t-pass")
+    host = Class.new do
+      include Sessions::ReauthenticationHelpers
+
+      attr_reader :request
+
+      def initialize(request) = @request = request
+      public :record_sessions_reauthentication!, :sessions_reauthentication_assertion
+    end.new(:request)
+    Sessions.stubs(:current).with(:request, scope: nil).returns(@session)
+
+    assert_nil host.record_sessions_reauthentication!(other)
+    refute @session.reload.reauthenticated_within?
+    assert_nil host.sessions_reauthentication_assertion(other, audience: "billing")
+  end
+
+  test "the subject carries the owner class, so ids of two classes never match" do
+    @session.reauthenticated!
+    token = @session.reauthentication_assertion(audience: "billing")
+
+    assert Sessions::Reauthentication.verify(token, audience: "billing", key: KEY, subject: @user)
+    assert_nil Sessions::Reauthentication.verify(token, audience: "billing", key: KEY, subject: "Admin:#{@user.id}")
+    assert_nil Sessions::Reauthentication.verify(token, audience: "billing", key: KEY, subject: @user.id.to_s)
+  end
+
+  test "a revocation seen through another instance stops recording and issuing" do
+    @session.reauthenticated!
+    stale = Session.find(@session.id)
+    Session.find(@session.id).end!(reason: :admin_revoked)
+
+    assert_raises(Sessions::Reauthentication::NotRecent) { stale.reauthentication_assertion(audience: "billing") }
+    assert_raises(Sessions::Error) { Session.find(@session.id).tap { |s| s.instance_variable_set(:@ended_at, nil) }.reauthenticated! }
+  end
+
+  test "an expired session is never recent" do
+    previous = Sessions.config.max_session_lifetime
+    Sessions.config.max_session_lifetime = 1.minute
+    @session.update_columns(created_at: 1.hour.ago)
+    assert_raises(Sessions::Error) { @session.reauthenticated! }
+  ensure
+    Sessions.config.max_session_lifetime = previous
+  end
+
+  test "an assertion dated in the future is refused" do
+    token = Sessions::Reauthentication.issue(subject: "User:1", session_id: "s", method: "password",
+                                             authenticated_at: 1.hour.from_now, audience: "a", key: KEY)
+    assert_nil Sessions::Reauthentication.verify(token, audience: "a", key: KEY)
+  end
+
+  test "an assertion carries its expiry for replay caches, and expires on the real clock" do
+    @session.reauthenticated!
+    previous = Sessions.config.reauthentication_assertion_ttl
+    Sessions.config.reauthentication_assertion_ttl = 5.minutes
+    token = @session.reauthentication_assertion(audience: "billing")
+
+    assertion = Sessions::Reauthentication.verify(token, audience: "billing", key: KEY)
+    assert_in_delta 5.minutes.from_now, assertion.expires_at, 5
+    travel(4.minutes) { assert Sessions::Reauthentication.verify(token, audience: "billing", key: KEY) }
+    travel(6.minutes) { assert_nil Sessions::Reauthentication.verify(token, audience: "billing", key: KEY) }
+  ensure
+    Sessions.config.reauthentication_assertion_ttl = previous
   end
 end

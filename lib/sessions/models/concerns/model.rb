@@ -159,11 +159,14 @@ module Sessions
       unless self.class.column_names.include?("auth_detail")
         raise Sessions::Error, "re-authentication needs the auth_detail column (rails generate sessions:install)"
       end
-      raise Sessions::Error, "an ended session cannot be re-authenticated" if ended?
 
-      detail = (try(:auth_detail) || {}).to_h
-      update!(auth_detail: detail.merge("reauthenticated_at" => at.utc.iso8601(6),
-                                        "reauthentication_method" => method.to_s))
+      with_lock do # reloads the row: a revocation by another process counts
+        raise Sessions::Error, "an ended or expired session cannot be re-authenticated" unless reauthenticatable?
+
+        detail = (try(:auth_detail) || {}).to_h
+        update!(auth_detail: detail.merge("reauthenticated_at" => at.utc.iso8601(6),
+                                          "reauthentication_method" => method.to_s))
+      end
     end
 
     # When the person last re-authenticated on this session, or nil.
@@ -176,31 +179,46 @@ module Sessions
 
     def reauthentication_method = (try(:auth_detail) || {}).to_h["reauthentication_method"]
 
-    # True when this live session re-authenticated within the duration
-    # (default: config.reauthentication_window).
+    # True when this live, unexpired session re-authenticated within the
+    # duration (default: config.reauthentication_window), on this row as stored.
     def reauthenticated_within?(duration = Sessions.config.reauthentication_window)
       at = reauthenticated_at
-      !ended? && at.present? && at > duration.ago && at <= Time.current
+      reauthenticatable? && at.present? && at > duration.ago && at <= Time.current
     end
 
     # A short-lived signed assertion of the last re-authentication, for one
     # audience (and optionally one purpose). Another service verifies it with
     # Sessions::Reauthentication.verify and the shared key. Raises
     # Sessions::Reauthentication::NotRecent unless the re-authentication is
-    # within config.reauthentication_window.
+    # within config.reauthentication_window. The row is reloaded under a lock
+    # first, so an assertion never outlives a revocation it could see.
     def reauthentication_assertion(audience:, purpose: nil, within: Sessions.config.reauthentication_window)
-      unless reauthenticated_within?(within)
-        raise Sessions::Reauthentication::NotRecent,
-              "no re-authentication within #{within.inspect}"
-      end
+      with_lock do
+        unless reauthenticated_within?(within)
+          raise Sessions::Reauthentication::NotRecent, "no re-authentication within #{within.inspect}"
+        end
 
-      config = Sessions.config
-      Sessions::Reauthentication.issue(
-        subject: try(:user_id) || try(:authenticatable_id), session_id: id, method: reauthentication_method,
-        authenticated_at: reauthenticated_at, audience: audience, purpose: purpose,
-        key: config.resolved_reauthentication_key, expires_in: config.reauthentication_assertion_ttl
-      )
+        config = Sessions.config
+        Sessions::Reauthentication.issue(
+          subject: reauthentication_subject, session_id: id, method: reauthentication_method,
+          authenticated_at: reauthenticated_at, audience: audience, purpose: purpose,
+          key: config.resolved_reauthentication_key, expires_in: config.reauthentication_assertion_ttl
+        )
+      end
     end
+
+    # The owner's canonical subject ("User:42"), with the owner class even
+    # when the owner record is not loaded.
+    def reauthentication_subject
+      owner_type = try(:user_type).presence || self.class.reflect_on_association(:user)&.klass&.base_class&.name
+      "#{owner_type}:#{user_id}"
+    end
+
+    private
+
+    def reauthenticatable? = !ended? && !sessions_expired?
+
+    public
 
     # --- Revocation -----------------------------------------------------------
 

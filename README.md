@@ -380,8 +380,8 @@ class ReauthenticationsController < ApplicationController
   def create
     return render(:new, status: :unprocessable_entity) unless current_user.valid_password?(params[:password])
 
-    record_sessions_reauthentication!(method: :password)
-    token = sessions_reauthentication_assertion(audience: "payments", purpose: "payout:42")
+    record_sessions_reauthentication!(current_user, method: :password)
+    token = sessions_reauthentication_assertion(current_user, audience: "payments", purpose: "payout:42")
     redirect_to payments_service_url(assertion: token), allow_other_host: true
   end
 end
@@ -391,14 +391,17 @@ The other service needs only `require "sessions/reauthentication"` and the key:
 
 ```ruby
 assertion = Sessions::Reauthentication.verify(token, audience: "payments", key: ENV["REAUTH_KEY"],
-                                              subject: user_id, purpose: "payout:42", max_age: 5.minutes)
-assertion&.method  # => "password"
-assertion&.jti     # unique: keep the accepted ones for a minute to refuse replays
+                                              subject: "User:#{user_id}", purpose: "payout:42", max_age: 5.minutes)
+assertion&.method      # => "password"
+assertion&.jti         # unique per assertion
+assertion&.expires_at  # to refuse replays, check-and-insert each accepted jti and keep it until this time
 ```
 
-On the model: `session.reauthenticated!(method: :password)`, `session.reauthenticated_within?(5.minutes)`, `session.reauthenticated_at`, and `session.reauthentication_assertion(audience:, purpose:)` (raises `Sessions::Reauthentication::NotRecent` without a recent re-authentication). An ended session is never recent. The state lives in `auth_detail`, so no migration is needed.
+The helpers take the owner whose credential you checked and act only on a current session of that owner (`scope:` picks the Warden scope when you sign in more than one). The subject of an assertion is the owner's class and id (`"User:42"`), so two owner classes with the same id never match; `verify` accepts the record or that string as `subject:`.
 
-What an assertion is not: a session or a bearer login. It expires after `reauthentication_assertion_ttl` (default one minute), it names one audience and one purpose, and `verify` returns `nil` for anything else — another key, audience, subject or purpose, a tampered or expired token, or a re-authentication older than `max_age`.
+On the model: `session.reauthenticated!(method: :password)`, `session.reauthenticated_within?(5.minutes)`, `session.reauthenticated_at`, and `session.reauthentication_assertion(audience:, purpose:)` (raises `Sessions::Reauthentication::NotRecent` without a recent re-authentication). An ended or expired session is never recent, and both methods reload the row under a lock first, so a revocation in another process counts. The state lives in `auth_detail`, so no migration is needed.
+
+What an assertion is not: a session or a bearer login. It expires after `reauthentication_assertion_ttl` (default one minute), it names one audience and one purpose, and `verify` returns `nil` for anything else — another key, audience, subject or purpose, a tampered or expired token, a timestamp more than 30 seconds in the future, or a re-authentication older than `max_age`.
 
 ## 🧹 Retention & the sweep
 
