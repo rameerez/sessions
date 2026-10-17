@@ -1,8 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-18)
 
-- **Re-authentication assertions.** `session.reauthenticated!(method: :password)` records a fresh re-authentication on the session row (in `auth_detail`, no migration); `session.reauthenticated_within?` answers whether it is recent; `session.reauthentication_assertion(audience:, purpose:)` issues a short-lived signed assertion of it, and `Sessions::Reauthentication.verify(token, audience:, key:, subject:, purpose:, max_age:)` checks one in another service with only the shared key (loadable on its own with `require "sessions/reauthentication"`). Opt-in controller helpers that act only on the named owner's session: `Sessions::ReauthenticationHelpers`. Subjects are `"<owner class>:<id>"`; ended and expired sessions are never recent; assertions carry `expires_at` for replay caches. Configuration: `reauthentication_key`, `reauthentication_window` (5 minutes), `reauthentication_assertion_ttl` (1 minute).
+Adds re-authentication assertions. This release is additive: it needs no migration, and existing installs change nothing until they call the new API.
+
+- **Record a fresh re-authentication on the session row.** Call `session.reauthenticated!(method: :password)` after your own credential check succeeds. The gem never checks credentials. The state lives in `auth_detail`, so no migration is needed. `session.reauthenticated_within?(5.minutes)` tells whether it is recent. `session.reauthenticated_at` and `session.reauthentication_method` read it back. An ended or expired session is never recent. Both methods reload the row under a lock, so a revocation in another process counts.
+- **Issue a short-lived signed assertion of it.** `session.reauthentication_assertion(audience:, purpose:)` returns a signed token for one audience and one purpose. It raises `Sessions::Reauthentication::NotRecent` when the re-authentication is not recent.
+- **Verify the assertion in another service.** `Sessions::Reauthentication.verify(token, audience:, key:, subject:, purpose:, max_age:)` returns an `Assertion` or `nil`. The other service needs only the shared key and `require "sessions/reauthentication"`: no database, no cookie, no models. `verify` refuses another key, audience, subject or purpose, a changed or expired token, a timestamp more than 30 seconds in the future, and a re-authentication older than `max_age`.
+- **Subjects carry the owner class.** A subject is `"<owner class>:<id>"`, so owners of two classes with the same id never match. A stored polymorphic type is resolved to its full class name, also when `store_full_class_name` is false.
+- **Replay protection is possible.** Each assertion has a unique `jti` and an `expires_at`. To refuse replays, record each accepted `jti` until `expires_at`.
+- **Opt-in controller helpers.** `include Sessions::ReauthenticationHelpers` gives `record_sessions_reauthentication!(owner, method:)`, `sessions_reauthenticated?(owner)` and `sessions_reauthentication_assertion(owner, audience:, purpose:)`. They act only on a current session of the named owner. Use `scope:` for apps with more than one Warden scope.
+- **New configuration.** `reauthentication_key` (a String of 32 bytes or more, or a callable), `reauthentication_window` (default 5 minutes) and `reauthentication_assertion_ttl` (default 1 minute).
 
 ## 0.2.2 (2026-07-06)
 
